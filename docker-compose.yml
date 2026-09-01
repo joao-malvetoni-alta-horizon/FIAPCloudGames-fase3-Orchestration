@@ -1,0 +1,115 @@
+# docker-compose unificado da FCG Fase 3 (base Fase 2 + novos componentes a adicionar).
+# Sobe a infraestrutura (RabbitMQ + PostgreSQL com 3 bancos) e os 4 microsservicos.
+# Uso:  docker-compose up --build
+#
+# Caminhos dos repos de servico (pastas irmaas deste repo).
+# Defaults = nomes gerados pelo `git clone` no GitHub. Se renomeou as pastas, ajuste no .env.
+#   USERS_API_PATH=../fcg-users-api  (exemplo)
+services:
+  # ---------- INFRAESTRUTURA ----------
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-fcg}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-fcg123}
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # Painel web: http://localhost:15672 (fcg/fcg123)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fcg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fcg123}
+      POSTGRES_DB: fcgdb            # banco do users; catalog/notifications vem do init.sql
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fcg}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------- SERVICOS ----------
+  users-api:
+    build:
+      context: ${USERS_API_PATH:-../FIAPCloudGames-fase3-UsersAPI}
+      dockerfile: src/FCG.API/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=fcgdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: ${RABBITMQ_USER:-fcg}
+      RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
+      RabbitMq__VirtualHost: "/"
+      JwtSettings__SecretKey: ${JWT_SECRET_KEY:-6a8a56f4d31a272d6e2f048f710c9cce45b51aa343fd6f73d8b69f1218eaac56}
+      JwtSettings__ExpirationHours: "4"
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  catalog-api:
+    build:
+      context: ${CATALOG_API_PATH:-../FIAPCloudGames-fase3-CatalogAPI}
+      dockerfile: src/CatalogAPI.API/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # catalog e a EXCECAO: usa connection string unica de RabbitMQ (URI amqp://).
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=catalogdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
+      ConnectionStrings__RabbitMqConnection: "amqp://${RABBITMQ_USER:-fcg}:${RABBITMQ_PASS:-fcg123}@rabbitmq:5672"
+      JwtSettings__SecretKey: ${JWT_SECRET_KEY:-6a8a56f4d31a272d6e2f048f710c9cce45b51aa343fd6f73d8b69f1218eaac56}
+    ports:
+      - "8082:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  payments-api:
+    build:
+      context: ${PAYMENTS_API_PATH:-../FIAPCloudGames-fase3-PaymentsAPI}
+      dockerfile: src/FCG.API/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=paymentsdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: ${RABBITMQ_USER:-fcg}
+      RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
+      RabbitMq__VirtualHost: "/"
+    ports:
+      - "8083:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  notifications-api:
+    build:
+      # O Dockerfile faz `COPY . .` e restaura `src/Notifications.API/...`, entao o
+      # contexto tem de ser a pasta NotificationsAPI/ -- nao a raiz do repo.
+      context: ${NOTIFICATIONS_API_PATH:-../FIAPCloudGames-fase3-NotificationsAPI}/NotificationsAPI
+      dockerfile: src/Notifications.API/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=notificationsdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Username: ${RABBITMQ_USER:-fcg}
+      RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
+    ports:
+      - "8084:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+volumes:
+  pgdata:

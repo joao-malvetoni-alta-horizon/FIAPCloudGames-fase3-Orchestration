@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: users-api
+  namespace: fcg
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: users-api }
+  template:
+    metadata:
+      labels: { app: users-api }
+    spec:
+      containers:
+        - name: users-api
+          image: fcg/users-api:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: ASPNETCORE_ENVIRONMENT } }
+            - name: RabbitMq__Host
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Host } }
+            - name: RabbitMq__Port
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Port } }
+            - name: RabbitMq__Username
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Username } }
+            - name: RabbitMq__VirtualHost
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__VirtualHost } }
+            - name: JwtSettings__ExpirationHours
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: JwtSettings__ExpirationHours } }
+            - name: RabbitMq__Password
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: RabbitMq__Password } }
+            - name: JwtSettings__SecretKey
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: JwtSettings__SecretKey } }
+            - name: ConnectionStrings__DefaultConnection
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: Users__ConnectionString } }
+          # Usuários não expõe /health: sonda TCP na porta 8080.
+          livenessProbe:
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: users-api
+  namespace: fcg
+spec:
+  type: ClusterIP
+  selector: { app: users-api }
+  ports:
+    - port: 8080
+      targetPort: 8080

@@ -1,0 +1,64 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fcg-ingress
+  namespace: fcg
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    # Roteamento por hostname: cada API mantém suas rotas originais
+    # (ex: /api/users/register, /api/v1/games), sem precisar de rewrite.
+    - host: users.fcg.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: users-api
+                port:
+                  number: 8080
+    - host: catalog.fcg.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-api
+                port:
+                  number: 8080
+    - host: payments.fcg.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: payments-api
+                port:
+                  number: 8080
+    - host: notifications.fcg.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: notifications-api
+                port:
+                  number: 8080
+    # Painel de gestão do RabbitMQ (não é uma API do projeto, mas fica
+    # exposto pelo mesmo túnel para facilitar a demo).
+    - host: rabbitmq.fcg.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rabbitmq
+                port:
+                  number: 15672

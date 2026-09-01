@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications-api
+  namespace: fcg
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: notifications-api }
+  template:
+    metadata:
+      labels: { app: notifications-api }
+    spec:
+      containers:
+        - name: notifications-api
+          image: fcg/notifications-api:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: ASPNETCORE_ENVIRONMENT } }
+            - name: RabbitMq__Host
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Host } }
+            - name: RabbitMq__Username
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Username } }
+            - name: RabbitMq__Password
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: RabbitMq__Password } }
+            - name: ConnectionStrings__DefaultConnection
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: Notifications__ConnectionString } }
+          # Notificações expõe /health: sonda HTTP.
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications-api
+  namespace: fcg
+spec:
+  type: ClusterIP
+  selector: { app: notifications-api }
+  ports:
+    - port: 8080
+      targetPort: 8080

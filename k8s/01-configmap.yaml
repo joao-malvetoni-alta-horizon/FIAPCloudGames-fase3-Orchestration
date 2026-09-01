@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fcg-config
+  namespace: fcg
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  RabbitMq__Host: "rabbitmq"
+  RabbitMq__Port: "5672"
+  RabbitMq__Username: "fcg"
+  RabbitMq__VirtualHost: "/"
+  JwtSettings__ExpirationHours: "4"
+  # Nomes de exchange/routing key documentados por aderencia ao requisito.
+  # Na pratica os servicos ja os definem no codigo (via fcg-contracts).
+  Messaging__UsersExchange: "users.exchange"
+  Messaging__CatalogExchange: "catalog.exchange"
+  Messaging__PaymentsExchange: "payments.exchange"

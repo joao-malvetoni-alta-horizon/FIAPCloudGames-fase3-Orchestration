@@ -1,0 +1,7 @@
+# Variaveis reais do Compose (nunca comitar)
+.env
+.idea
+
+# Sistema
+.DS_Store
+Thumbs.db

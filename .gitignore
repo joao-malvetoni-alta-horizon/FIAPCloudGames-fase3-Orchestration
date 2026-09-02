@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 # Variaveis reais do Compose (nunca comitar)
 .env
 .idea
@@ -5,3 +6,38 @@
 # Sistema
 .DS_Store
 Thumbs.db
+=======
+# .NET
+bin/
+obj/
+.vs/
+.idea/
+
+# Rider
+*.sln.iml
+
+# User-specific files
+*.user
+*.suo
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.secret.yaml
+secrets.yaml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+>>>>>>> Stashed changes

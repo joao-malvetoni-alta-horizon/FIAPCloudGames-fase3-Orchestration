@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 # FCG Orchestration (Fase 3)
 
 Repositorio de **orquestracao** da FIAP Cloud Games (Fase 3). Parte da base da Fase 2 (RabbitMQ, PostgreSQL, `docker-compose` e manifestos Kubernetes) e concentra aqui as novas capacidades obrigatorias do Tech Challenge: **API Gateway (Kong)**, **Observabilidade (Prometheus + Grafana)**, **MongoDB** e **Redis**.
@@ -187,3 +188,41 @@ O painel de gestão do RabbitMQ também sai pelo mesmo túnel, em `http://rabbit
 > **Nota:** o `catalog-api` usa `ConnectionStrings__RabbitMqConnection` (URI `amqp://`) no lugar de `RabbitMq__*`. `users` e `catalog` compartilham a mesma `JwtSettings__SecretKey`. `payments` tem banco proprio (`paymentsdb`), mas nao usa JWT.
 
 > **Secret** e apenas base64 (nao e cofre). Nao comite valores reais.
+=======
+# FIAP Cloud Games - Fase 3
+
+Repositório responsável pela orquestração da arquitetura da FIAP Cloud Games
+na Fase 3 do Tech Challenge.
+
+## Projetos
+
+- FIAPCloudGames-fase3-UsersAPI
+- FIAPCloudGames-fase3-CatalogAPI
+- FIAPCloudGames-fase3-PaymentsAPI
+- FIAPCloudGames-fase3-NotificationsAPI
+
+## Tecnologias
+
+- .NET
+- Kubernetes
+- AWS
+- AWS API Gateway
+- AWS Lambda
+- RabbitMQ
+- Redis
+- Prometheus
+- Grafana
+- NoSQL
+
+## Arquitetura
+
+Documentação em construção.
+
+## Execução
+
+Documentação em construção.
+
+## Testes
+
+Documentação em construção.
+>>>>>>> Stashed changes

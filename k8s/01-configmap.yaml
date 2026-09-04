@@ -15,3 +15,6 @@ data:
   Messaging__UsersExchange: "users.exchange"
   Messaging__CatalogExchange: "catalog.exchange"
   Messaging__PaymentsExchange: "payments.exchange"
+  # Claim `iss` do JWT: o users-api emite (JwtSettings__Issuer) e o Kong valida.
+  # Os dois Deployments leem esta mesma key, para nao dessincronizar.
+  JWT_ISSUER: "FCG"

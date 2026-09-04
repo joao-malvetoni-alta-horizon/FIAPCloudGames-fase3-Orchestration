@@ -1,5 +1,6 @@
 # docker-compose unificado da FCG Fase 3 (base Fase 2 + novos componentes a adicionar).
-# Sobe a infraestrutura (RabbitMQ + PostgreSQL com 3 bancos) e os 4 microsservicos.
+# Sobe a infraestrutura (RabbitMQ + PostgreSQL com 3 bancos), os 4 microsservicos
+# e o API Gateway (Kong, DB-less) na frente do users-api e do catalog-api.
 # Uso:  docker-compose up --build
 #
 # Caminhos dos repos de servico (pastas irmaas deste repo).
@@ -53,6 +54,9 @@ services:
       RabbitMq__VirtualHost: "/"
       JwtSettings__SecretKey: ${JWT_SECRET_KEY:-6a8a56f4d31a272d6e2f048f710c9cce45b51aa343fd6f73d8b69f1218eaac56}
       JwtSettings__ExpirationHours: "4"
+      # Claim `iss` do token. O gateway (Kong) valida exatamente este valor -
+      # por isso os dois leem a MESMA variavel JWT_ISSUER.
+      JwtSettings__Issuer: ${JWT_ISSUER:-FCG}
     ports:
       - "8081:8080"
     depends_on:
@@ -110,6 +114,58 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+
+  # ---------- API GATEWAY ----------
+  # Kong em modo DB-less: as rotas vem de kong/kong.yml (unica fonte de verdade,
+  # compartilhada com os manifestos k8s). Escopo atual: catalog-api e users-api.
+  #
+  # Ponto de entrada unico:
+  #   http://localhost:8000/users/...     (login, register, admin)
+  #   http://localhost:8000/catalog/...   (jogos, biblioteca)
+  # As portas diretas dos servicos (8081-8084) continuam abertas para debug.
+  kong:
+    image: kong:3.9
+    # O Kong DB-less nao interpola variaveis de ambiente no YAML declarativo, e
+    # `jwt_secrets.secret` nao aceita referencia de vault. O wrapper injeta o
+    # segredo/issuer no arquivo e chama o entrypoint oficial do Kong.
+    entrypoint: ["/bin/sh", "/kong/declarative/render-and-start.sh"]
+    command: ["kong", "docker-start"]
+    environment:
+      KONG_DATABASE: "off"
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      # Aqui a Admin API escuta em 0.0.0.0 (e nao em 127.0.0.1 como no k8s)
+      # porque o mapeamento de portas do Docker chega pelo IP do container -
+      # com bind no loopback, a publicacao abaixo nao funcionaria. O que limita
+      # o acesso e a propria publicacao, presa em 127.0.0.1 do HOST.
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+      KONG_STATUS_LISTEN: "0.0.0.0:8100"
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      # Mantem o X-Kong-*-Latency e derruba o `Server: kong/3.9`.
+      KONG_HEADERS: "latency_tokens"
+      # Mesma chave que users-api usa para EMITIR e catalog-api para VALIDAR.
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-6a8a56f4d31a272d6e2f048f710c9cce45b51aa343fd6f73d8b69f1218eaac56}
+      # Mesma variavel que o users-api usa em JwtSettings__Issuer.
+      JWT_ISSUER: ${JWT_ISSUER:-FCG}
+    volumes:
+      - ./kong:/kong/declarative:ro
+    ports:
+      - "8000:8000"              # proxy - entrada unica das APIs
+      - "127.0.0.1:8001:8001"    # Admin API (read-only no DB-less), so localhost
+      - "127.0.0.1:8100:8100"    # /status/ready e /metrics, so localhost
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      # Nenhum dos dois declara healthcheck, entao esperamos so o start.
+      # (O Kong DB-less sobe mesmo com upstream fora do ar - responde 502/503
+      # ate o servico atender.)
+      catalog-api: { condition: service_started }
+      users-api: { condition: service_started }
 
 volumes:
   pgdata:

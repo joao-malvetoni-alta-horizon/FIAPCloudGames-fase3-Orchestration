@@ -30,6 +30,9 @@ spec:
               valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__VirtualHost } }
             - name: JwtSettings__ExpirationHours
               valueFrom: { configMapKeyRef: { name: fcg-config, key: JwtSettings__ExpirationHours } }
+            # Claim `iss` emitida no token; o gateway (Kong) valida este valor.
+            - name: JwtSettings__Issuer
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: JWT_ISSUER } }
             - name: RabbitMq__Password
               valueFrom: { secretKeyRef: { name: fcg-secrets, key: RabbitMq__Password } }
             - name: JwtSettings__SecretKey

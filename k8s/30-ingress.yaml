@@ -50,6 +50,19 @@ spec:
                 name: notifications-api
                 port:
                   number: 8080
+    # API Gateway (Kong): entrada unica, roteando por PREFIXO de caminho
+    # (http://gateway.fcg.local/catalog/api/v1/games). Quem faz o strip do
+    # prefixo /catalog e o proprio Kong, nao o nginx.
+    - host: gateway.fcg.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kong-proxy
+                port:
+                  number: 8000
     # Painel de gestão do RabbitMQ (não é uma API do projeto, mas fica
     # exposto pelo mesmo túnel para facilitar a demo).
     - host: rabbitmq.fcg.local

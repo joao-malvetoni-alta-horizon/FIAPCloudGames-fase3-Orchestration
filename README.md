@@ -1,37 +1,49 @@
-<<<<<<< Updated upstream
 # FCG Orchestration (Fase 3)
 
-Repositorio de **orquestracao** da FIAP Cloud Games (Fase 3). Parte da base da Fase 2 (RabbitMQ, PostgreSQL, `docker-compose` e manifestos Kubernetes) e concentra aqui as novas capacidades obrigatorias do Tech Challenge: **API Gateway (Kong)**, **Observabilidade (Prometheus + Grafana)**, **MongoDB** e **Redis**.
+Repositório de **orquestração** da FIAP Cloud Games (Fase 3). Parte da base da Fase 2 (RabbitMQ, PostgreSQL, `docker-compose` e manifestos Kubernetes) e concentra aqui as novas capacidades obrigatórias do Tech Challenge: **API Gateway (Kong)**, **Observabilidade (New Relic)**, **MongoDB**, **Redis** e a migração do `NotificationsAPI` para **Serverless (AWS Lambda)**.
 
-> Cada microsservico vive no seu proprio repositorio `FIAPCloudGames-fase3-*`, partindo do codigo da Fase 2 ate que cada frente evolua o servico correspondente.
+> Cada microsserviço vive no seu próprio repositório `FIAPCloudGames-fase3-*`, partindo do código da Fase 2 até que cada frente evolua o serviço correspondente.
+
+## Stack escolhida pelo grupo
+
+| Requisito obrigatório | Ferramenta escolhida | Onde vive |
+|---|---|---|
+| API Gateway | Kong | `Orchestration` (manifestos `k8s/`) |
+| Migração para Serverless | AWS Lambda (SNS + SQS) | Repositório próprio `FIAPCloudGames-fase3-NotificationsAPI` |
+| Observabilidade | New Relic (Opção B: métricas, logs e traces) | `UsersAPI`, `CatalogAPI`, `PaymentsAPI` e a função Lambda |
+| NoSQL | DynamoDB (dados de notificação) | Função Lambda / `FIAPCloudGames-fase3-NotificationsAPI` |
+| Cache distribuído | Redis | Microsserviço(s) HTTP |
 
 ## Arquitetura
 
-4 microsservicos independentes que se comunicam de forma **assincrona via RabbitMQ**:
+3 microsserviços HTTP independentes que se comunicam de forma **assíncrona via RabbitMQ**, mais uma função serverless:
 
-| Servico | Papel | Banco | REST |
+| Serviço | Papel | Banco | REST |
 |---|---|:---:|:---:|
-| users-api | Cadastro, login (JWT), autorizacao | PostgreSQL | Sim |
+| users-api | Cadastro, login (JWT), autorização | PostgreSQL | Sim |
 | catalog-api | CRUD de jogos, inicia compra, biblioteca | PostgreSQL | Sim |
-| payments-api | Simula pagamento (consumidor de eventos) | PostgreSQL | So `/health` |
-| notifications-api | "Envia" e-mails (log) | PostgreSQL | So `/health` |
+| payments-api | Simula pagamento (consumidor de eventos) | PostgreSQL | Só `/health` |
 
-Repos dos servicos:
+O antigo `notifications-api` (container 24/7 que só consumia eventos do RabbitMQ) foi **migrado para uma função AWS Lambda** — não faz mais parte do `docker-compose`/`k8s` deste repositório. Ver a seção [Serverless (NotificationsAPI)](#serverless-notificationsapi) abaixo.
+
+Repos dos serviços:
 - users-api: https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-UsersAPI
 - catalog-api: https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-CatalogAPI
 - payments-api: https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-PaymentsAPI
-- notifications-api: https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-NotificationsAPI
+- notifications (serverless): https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-NotificationsAPI
 
-> `FiapCloudGames.Contracts` (https://github.com/pdelfino0/fcg-contracts) e o pacote com as classes de evento compartilhadas entre os servicos. E consumido via **NuGet** (`PackageReference` no `.csproj` de cada servico), **nao** precisa ser clonado localmente para rodar o Compose ou o k8s.
+> `FiapCloudGames.Contracts` (https://github.com/pdelfino0/fcg-contracts) é o pacote com as classes de evento compartilhadas entre os serviços. É consumido via **NuGet** (`PackageReference` no `.csproj` de cada serviço), **não** precisa ser clonado localmente para rodar o Compose ou o k8s.
 
 ## Estrutura
 
 ```
 FIAPCloudGames-fase3-Orchestration/   # este repo (nome padrao do git clone)
-├── docker-compose.yml   # RabbitMQ + Postgres(4 bancos) + 4 servicos
+├── docker-compose.yml   # RabbitMQ + Postgres (2 bancos) + 3 microsservicos HTTP
 ├── .env.example         # variaveis do Compose (sem valores reais)
-├── db/init.sql          # cria catalogdb, notificationsdb e paymentsdb
+├── db/init.sql          # cria catalogdb e paymentsdb
 ├── k8s/                 # manifestos agregados (kubectl apply -f k8s/)
+├── observability/       # secret/manifestos de New Relic
+├── docs/                # documentacao de observabilidade
 └── templates/           # modelos de Dockerfile e /k8s por servico
 ```
 
@@ -45,7 +57,7 @@ pasta-pai/
 ├── FIAPCloudGames-fase3-UsersAPI/
 ├── FIAPCloudGames-fase3-CatalogAPI/
 ├── FIAPCloudGames-fase3-PaymentsAPI/
-└── FIAPCloudGames-fase3-NotificationsAPI/
+└── FIAPCloudGames-fase3-NotificationsAPI/   # codigo + IaC da funcao Lambda (nao entra no compose/k8s)
 ```
 
 ```bash
@@ -58,13 +70,13 @@ git clone https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-Pa
 git clone https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-NotificationsAPI.git
 ```
 
-> Nao e preciso clonar `fcg-contracts`: ele e restaurado como pacote NuGet durante o `dotnet restore`/`docker build` de cada servico.
+> Não é preciso clonar `fcg-contracts`: ele é restaurado como pacote NuGet durante o `dotnet restore`/`docker build` de cada serviço.
 
-> Se voce **renomeou** as pastas localmente (ex.: `fcg-users-api`), copie `.env.example` para `.env` e ajuste `USERS_API_PATH`, `CATALOG_API_PATH`, etc.
+> Se você **renomeou** as pastas localmente (ex.: `fcg-users-api`), copie `.env.example` para `.env` e ajuste `USERS_API_PATH`, `CATALOG_API_PATH`, etc.
 
 ## Como rodar com Docker
 
-Pre-requisito: os repos de servico devem estar como **irmaos** deste, com os nomes padrao do clone (ou caminhos customizados no `.env`).
+Pré-requisito: os repos de serviço devem estar como **irmãos** deste, com os nomes padrão do clone (ou caminhos customizados no `.env`).
 
 ```bash
 cd FIAPCloudGames-fase3-Orchestration
@@ -73,38 +85,38 @@ docker-compose up --build
 docker-compose ps           # todos healthy/running
 ```
 
-Portas locais: users `8081`, catalog `8082`, payments `8083`, notifications `8084` (interno sempre `8080`).
+Portas locais: users `8081`, catalog `8082`, payments `8083` (interno sempre `8080`).
 Painel do RabbitMQ: http://localhost:15672 (fcg/fcg123).
 
 ### Testar os fluxos
-1. **Cadastro:** `POST http://localhost:8081/api/users/register` -> ver log de boas-vindas no `notifications-api`.
-2. **Compra:** iniciar compra no `catalog-api` (8082) -> pagamento aprovado -> jogo na biblioteca -> log de confirmacao.
+1. **Cadastro:** `POST http://localhost:8081/api/users/register` -> publica `UserRegisteredEvent` no RabbitMQ (e, quando os publishers SNS estiverem integrados, também no SNS que aciona a Lambda de notificações).
+2. **Compra:** iniciar compra no `catalog-api` (8082) -> pagamento aprovado -> jogo na biblioteca -> `PaymentProcessedEvent` publicado.
 
 ## Como fazer deploy no Kubernetes (Minikube)
 
-### Opcao automatizada (recomendada)
+### Opção automatizada (recomendada)
 
-Requisitos: `docker`, `minikube`, `kubectl` e `make` instalados. No Windows, rode via **Git Bash** ou **WSL** (o `make` nao existe no PowerShell puro).
+Requisitos: `docker`, `minikube`, `kubectl` e `make` instalados. No Windows, rode via **Git Bash** ou **WSL** (o `make` não existe no PowerShell puro).
 
 ```bash
 cp .env.example .env   # se ainda nao fez isso para o Compose
 
-make k8s-up            # start do Minikube + build/load das 4 imagens + apply + espera os pods ficarem prontos
+make k8s-up            # start do Minikube + build/load das 3 imagens + apply + espera os pods ficarem prontos
 make k8s-status        # ve pods, deployments, services, configmaps e secrets
 make k8s-ingress       # (opcional) habilita o Ingress e aplica o manifesto de ingress
 make k8s-down          # derruba tudo (remove o namespace fcg)
 ```
 
-`make help` lista todos os comandos disponiveis. Os scripts usados pelo Makefile ficam em `scripts/k8s/` e leem os caminhos dos repos irmaos do `.env` (mesmas variaveis do Compose: `USERS_API_PATH`, etc.).
+`make help` lista todos os comandos disponíveis. Os scripts usados pelo Makefile ficam em `scripts/k8s/` e leem os caminhos dos repos irmãos do `.env` (mesmas variáveis do Compose: `USERS_API_PATH`, etc.).
 
-O `minikube tunnel` e a edicao do arquivo de hosts (necessarios so para o Ingress) continuam manuais — ver o passo a passo abaixo.
+O `minikube tunnel` e a edição do arquivo de hosts (necessários só para o Ingress) continuam manuais — ver o passo a passo abaixo.
 
 ### Passo a passo manual (o que o `make k8s-up` automatiza)
 
 ```bash
 minikube start
 
-# Build + carga das 4 imagens no cluster local
+# Build + carga das 3 imagens no cluster local
 # (ajuste os caminhos se renomeou as pastas apos o clone)
 docker build -t fcg/users-api:1.0 ../FIAPCloudGames-fase3-UsersAPI -f ../FIAPCloudGames-fase3-UsersAPI/src/FCG.API/Dockerfile
 minikube image load fcg/users-api:1.0
@@ -112,8 +124,6 @@ docker build -t fcg/catalog-api:1.0 ../FIAPCloudGames-fase3-CatalogAPI -f ../FIA
 minikube image load fcg/catalog-api:1.0
 docker build -t fcg/payments-api:1.0 ../FIAPCloudGames-fase3-PaymentsAPI -f ../FIAPCloudGames-fase3-PaymentsAPI/src/FCG.API/Dockerfile
 minikube image load fcg/payments-api:1.0
-docker build -t fcg/notifications-api:1.0 ../FIAPCloudGames-fase3-NotificationsAPI/NotificationsAPI -f ../FIAPCloudGames-fase3-NotificationsAPI/NotificationsAPI/src/Notifications.API/Dockerfile
-minikube image load fcg/notifications-api:1.0
 
 # Aplica tudo (a numeracao garante a ordem)
 kubectl apply -f k8s/
@@ -129,6 +139,8 @@ kubectl port-forward service/users-api 8081:8080 -n fcg
 ## Expor as APIs com Ingress (alternativa ao port-forward)
 
 O `port-forward` é só para teste manual (uma porta, um serviço, uma sessão). Para expor **todas** as APIs de uma vez, com um único ponto de entrada, usamos um `Ingress` (`k8s/30-ingress.yaml`), que roteia por hostname para cada Service.
+
+> **Kong.** A introdução do Kong como porta de entrada única (validação de JWT + roteamento para `users-api`/`catalog-api`) está sendo desenvolvida na branch `feat/api-gateway` deste repositório, com manifestos próprios (`k8s/03-kong-config.yaml`, `k8s/24-kong.yaml`, `kong/kong.yml`). Até o merge para `main`, o roteamento externo segue pelo Ingress nginx descrito abaixo.
 
 ```bash
 # 1. Habilitar o controller de Ingress do Minikube (só uma vez por cluster)
@@ -156,7 +168,6 @@ Isso expõe o controller do Ingress em `localhost:80`. Falta só resolver os hos
 127.0.0.1 users.fcg.local
 127.0.0.1 catalog.fcg.local
 127.0.0.1 payments.fcg.local
-127.0.0.1 notifications.fcg.local
 127.0.0.1 rabbitmq.fcg.local
 ```
 
@@ -174,55 +185,44 @@ O painel de gestão do RabbitMQ também sai pelo mesmo túnel, em `http://rabbit
 
 > **Por que por hostname e não por caminho (`/users`, `/catalog`)?** Cada API já tem seus próprios prefixos de rota (`/api/users/...`, `/api/v1/games`, etc.), diferentes entre si. Rotear por path exigiria reescrever a URL antes de repassar pro serviço (`rewrite-target`), o que complica sem necessidade aqui. Rotear por hostname mantém as rotas originais intactas — cada domínio aponta pra um Service só.
 
+## Serverless (NotificationsAPI)
+
+O `NotificationsAPI` da Fase 2 (container ASP.NET Core rodando 24/7 no Kubernetes, só para consumir eventos do RabbitMQ) foi **migrado para uma função AWS Lambda**, atendendo ao requisito obrigatório de "Migração para Arquitetura Serverless" da Fase 3.
+
+- **Repositório próprio (código + IaC):** https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-NotificationsAPI
+- **Infraestrutura como código:** AWS SAM (`template.yaml` na raiz daquele repositório).
+- **Arquitetura:** `UsersAPI`/`PaymentsAPI` publicam `UserRegisteredEvent`/`PaymentProcessedEvent` num tópico **SNS**, que entrega numa fila **SQS** (com DLQ), que aciona a **Lambda** correspondente — sem nenhum componente rodando continuamente.
+- **Persistência:** DynamoDB (`fcg-notifications`), atendendo também o requisito obrigatório de NoSQL.
+- **Observabilidade:** OpenTelemetry exportando para o New Relic (traces e, em configuração, métricas/logs), consistente com a escolha de Opção B (New Relic) do grupo.
+
+Recursos provisionados na AWS (conta usada pelo grupo, região `us-east-1`):
+
+| Recurso | Nome |
+|---|---|
+| Stack CloudFormation | `fcg-notifications-serverless` |
+| Funções Lambda | `fcg-notifications-user-registered`, `fcg-notifications-payment-processed` |
+| Tópicos SNS | `fcg-user-events`, `fcg-payment-events` |
+| Filas SQS (+ DLQ) | `fcg-notifications-user-registered`, `fcg-notifications-payment-processed` |
+| Tabela DynamoDB | `fcg-notifications` |
+
+> **Pré-requisito para o fluxo ficar 100% automático:** `UsersAPI` e `PaymentsAPI` continuam publicando hoje somente no RabbitMQ (usado pelo `catalog-api` para liberar jogos na biblioteca). Para a Lambda ser acionada por uma ação real do sistema (não só por publicação manual via CLI/console), esses dois serviços também precisam publicar nos tópicos SNS acima — ver detalhes e o snippet de código sugerido no `README.md`/`SDD.md` do repositório `FIAPCloudGames-fase3-NotificationsAPI`.
+
 ## Variaveis de ambiente por servico
 
-| Variavel | users | catalog | payments | notifications | Origem |
-|---|:---:|:---:|:---:|:---:|---|
-| `ConnectionStrings__DefaultConnection` | Sim | Sim | Sim | Sim | Secret |
-| `ConnectionStrings__RabbitMqConnection` | — | Sim | — | — | Secret |
-| `RabbitMq__Host` | Sim | — | Sim | Sim | ConfigMap |
-| `RabbitMq__Password` | Sim | — | Sim | Sim | Secret |
-| `JwtSettings__SecretKey` | Sim | Sim | — | — | Secret |
-| `ASPNETCORE_ENVIRONMENT` | Sim | Sim | Sim | Sim | ConfigMap |
+| Variavel | users | catalog | payments | Origem |
+|---|:---:|:---:|:---:|---|
+| `ConnectionStrings__DefaultConnection` | Sim | Sim | Sim | Secret |
+| `ConnectionStrings__RabbitMqConnection` | — | Sim | — | Secret |
+| `RabbitMq__Host` | Sim | — | Sim | ConfigMap |
+| `RabbitMq__Password` | Sim | — | Sim | Secret |
+| `JwtSettings__SecretKey` | Sim | Sim | — | Secret |
+| `ASPNETCORE_ENVIRONMENT` | Sim | Sim | Sim | ConfigMap |
+| `NEW_RELIC_LICENSE_KEY` | Sim | Sim | Sim | Secret (`observability/new-relic-secret.yaml`) |
 
 > **Nota:** o `catalog-api` usa `ConnectionStrings__RabbitMqConnection` (URI `amqp://`) no lugar de `RabbitMq__*`. `users` e `catalog` compartilham a mesma `JwtSettings__SecretKey`. `payments` tem banco proprio (`paymentsdb`), mas nao usa JWT.
 
 > **Secret** e apenas base64 (nao e cofre). Nao comite valores reais.
-=======
-# FIAP Cloud Games - Fase 3
 
-Repositório responsável pela orquestração da arquitetura da FIAP Cloud Games
-na Fase 3 do Tech Challenge.
+## Observabilidade (New Relic)
 
-## Projetos
-
-- FIAPCloudGames-fase3-UsersAPI
-- FIAPCloudGames-fase3-CatalogAPI
-- FIAPCloudGames-fase3-PaymentsAPI
-- FIAPCloudGames-fase3-NotificationsAPI
-
-## Tecnologias
-
-- .NET
-- Kubernetes
-- AWS
-- AWS API Gateway
-- AWS Lambda
-- RabbitMQ
-- Redis
-- Prometheus
-- Grafana
-- NoSQL
-
-## Arquitetura
-
-Documentação em construção.
-
-## Execução
-
-Documentação em construção.
-
-## Testes
-
-Documentação em construção.
->>>>>>> Stashed changes
+O grupo optou pela **Opção B** do enunciado (plataforma de APM gerenciada): **New Relic**, cobrindo os três pilares (métricas, logs e traces) em `UsersAPI`, `CatalogAPI`, `PaymentsAPI` e na função serverless. Detalhes em [`docs/observability.md`](docs/observability.md). A license key é injetada via Kubernetes Secret (`observability/new-relic-secret.yaml`), nunca commitada em texto puro no código-fonte, conforme exigido pelo enunciado para a Opção B.

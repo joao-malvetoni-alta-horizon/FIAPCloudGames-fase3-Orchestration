@@ -1,5 +1,9 @@
 # docker-compose unificado da FCG Fase 3 (base Fase 2 + novos componentes a adicionar).
-# Sobe a infraestrutura (RabbitMQ + PostgreSQL com 3 bancos) e os 4 microsservicos.
+# Sobe a infraestrutura (RabbitMQ + PostgreSQL com 2 bancos) e os 3 microsservicos HTTP.
+# O notifications-api NAO roda mais aqui: foi migrado para uma funcao AWS Lambda
+# (SNS + SQS), acionada sob demanda em vez de um container 24/7.
+# Ver repositorio FIAPCloudGames-fase3-NotificationsAPI (pasta irma) e a secao
+# "Serverless (NotificationsAPI)" do README.md deste repo.
 # Uso:  docker-compose up --build
 #
 # Caminhos dos repos de servico (pastas irmaas deste repo).
@@ -26,7 +30,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-fcg}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fcg123}
-      POSTGRES_DB: fcgdb            # banco do users; catalog/notifications vem do init.sql
+      POSTGRES_DB: fcgdb            # banco do users; catalog/payments vem do init.sql
     ports:
       - "5432:5432"
     volumes:
@@ -89,24 +93,6 @@ services:
       RabbitMq__VirtualHost: "/"
     ports:
       - "8083:8080"
-    depends_on:
-      postgres: { condition: service_healthy }
-      rabbitmq: { condition: service_healthy }
-
-  notifications-api:
-    build:
-      # O Dockerfile faz `COPY . .` e restaura `src/Notifications.API/...`, entao o
-      # contexto tem de ser a pasta NotificationsAPI/ -- nao a raiz do repo.
-      context: ${NOTIFICATIONS_API_PATH:-../FIAPCloudGames-fase3-NotificationsAPI}/NotificationsAPI
-      dockerfile: src/Notifications.API/Dockerfile
-    environment:
-      ASPNETCORE_ENVIRONMENT: Production
-      ConnectionStrings__DefaultConnection: "Host=postgres;Database=notificationsdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
-      RabbitMq__Host: rabbitmq
-      RabbitMq__Username: ${RABBITMQ_USER:-fcg}
-      RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
-    ports:
-      - "8084:8080"
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }

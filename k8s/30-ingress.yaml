@@ -40,16 +40,8 @@ spec:
                 name: payments-api
                 port:
                   number: 8080
-    - host: notifications.fcg.local
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: notifications-api
-                port:
-                  number: 8080
+    # notifications-api NAO tem mais rota aqui: virou uma funcao AWS Lambda
+    # (fora do cluster), acionada por SNS/SQS. Ver README.md, secao Serverless.
     # Painel de gestão do RabbitMQ (não é uma API do projeto, mas fica
     # exposto pelo mesmo túnel para facilitar a demo).
     - host: rabbitmq.fcg.local

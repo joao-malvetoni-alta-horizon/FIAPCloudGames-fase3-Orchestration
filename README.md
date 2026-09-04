@@ -63,7 +63,7 @@ pasta-pai/
 ```bash
 mkdir fcg-fase3 && cd fcg-fase3
 
-git clone https://github.com/andersonluizpereiradias/FIAPCloudGames-fase3-Orchestration.git
+git clone https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-Orchestration.git
 git clone https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-UsersAPI.git
 git clone https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-CatalogAPI.git
 git clone https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-PaymentsAPI.git

@@ -20,18 +20,17 @@ spec:
           env:
             - name: ASPNETCORE_ENVIRONMENT
               valueFrom: { configMapKeyRef: { name: fcg-config, key: ASPNETCORE_ENVIRONMENT } }
-            - name: RabbitMq__Host
-              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Host } }
-            - name: RabbitMq__Port
-              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Port } }
-            - name: RabbitMq__Username
-              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Username } }
-            - name: RabbitMq__VirtualHost
-              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__VirtualHost } }
             - name: JwtSettings__ExpirationHours
               valueFrom: { configMapKeyRef: { name: fcg-config, key: JwtSettings__ExpirationHours } }
-            - name: RabbitMq__Password
-              valueFrom: { secretKeyRef: { name: fcg-secrets, key: RabbitMq__Password } }
+            # UserRegisteredEvent vai por SNS (consumido pela Lambda do NotificationsAPI).
+            - name: Sns__TopicArn
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: Sns__UserEventsTopicArn } }
+            - name: AWS_REGION
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: AWS_REGION } }
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: AWS_ACCESS_KEY_ID } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: AWS_SECRET_ACCESS_KEY } }
             - name: JwtSettings__SecretKey
               valueFrom: { secretKeyRef: { name: fcg-secrets, key: JwtSettings__SecretKey } }
             - name: ConnectionStrings__DefaultConnection

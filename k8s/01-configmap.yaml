@@ -5,6 +5,9 @@ metadata:
   namespace: fcg
 data:
   ASPNETCORE_ENVIRONMENT: "Production"
+  # RabbitMQ: fluxo Catalog -> Payments (OrderPlacedEvent) e Payments -> Catalog
+  # (PaymentProcessedEvent, libera o jogo na biblioteca). A Lambda do NotificationsAPI
+  # e acionada via SNS (fcg-user-events / fcg-payment-events) por users-api/payments-api.
   RabbitMq__Host: "rabbitmq"
   RabbitMq__Port: "5672"
   RabbitMq__Username: "fcg"
@@ -15,3 +18,7 @@ data:
   Messaging__UsersExchange: "users.exchange"
   Messaging__CatalogExchange: "catalog.exchange"
   Messaging__PaymentsExchange: "payments.exchange"
+  # SNS (users-api e payments-api publicam; a Lambda do NotificationsAPI consome via SQS).
+  Sns__UserEventsTopicArn: "arn:aws:sns:us-east-1:450753703903:fcg-user-events"
+  Sns__PaymentEventsTopicArn: "arn:aws:sns:us-east-1:450753703903:fcg-payment-events"
+  AWS_REGION: "us-east-1"

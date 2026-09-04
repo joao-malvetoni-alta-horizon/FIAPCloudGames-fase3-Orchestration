@@ -18,7 +18,9 @@ spec:
           ports:
             - containerPort: 8080
           env:
-            # payments-api: sem JWT. Usa RabbitMQ e banco proprio (paymentsdb).
+            # payments-api: sem JWT. Usa banco proprio (paymentsdb). PaymentProcessedEvent
+            # vai em dois transportes: RabbitMQ (de volta pro CatalogAPI, libera o jogo na
+            # biblioteca) e SNS (para a Lambda do NotificationsAPI, envia o email).
             - name: ASPNETCORE_ENVIRONMENT
               valueFrom: { configMapKeyRef: { name: fcg-config, key: ASPNETCORE_ENVIRONMENT } }
             - name: RabbitMq__Host
@@ -31,6 +33,14 @@ spec:
               valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__VirtualHost } }
             - name: RabbitMq__Password
               valueFrom: { secretKeyRef: { name: fcg-secrets, key: RabbitMq__Password } }
+            - name: Sns__TopicArn
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: Sns__PaymentEventsTopicArn } }
+            - name: AWS_REGION
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: AWS_REGION } }
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: AWS_ACCESS_KEY_ID } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: AWS_SECRET_ACCESS_KEY } }
             - name: ConnectionStrings__DefaultConnection
               valueFrom: { secretKeyRef: { name: fcg-secrets, key: Payments__ConnectionString } }
           # Pagamentos expõe /health: sonda HTTP.

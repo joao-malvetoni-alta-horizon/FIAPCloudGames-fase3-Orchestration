@@ -16,7 +16,7 @@ Repositório de **orquestração** da FIAP Cloud Games (Fase 3). Parte da base d
 
 ## Arquitetura
 
-3 microsserviços HTTP independentes que se comunicam de forma **assíncrona via RabbitMQ**, mais uma função serverless:
+3 microsserviços HTTP independentes que se comunicam de forma **assíncrona** (RabbitMQ entre `catalog-api` -> `payments-api`; SNS de `users-api`/`payments-api` para a Lambda de notificações), mais uma função serverless:
 
 | Serviço | Papel | Banco | REST |
 |---|---|:---:|:---:|
@@ -89,8 +89,8 @@ Portas locais: users `8081`, catalog `8082`, payments `8083` (interno sempre `80
 Painel do RabbitMQ: http://localhost:15672 (fcg/fcg123).
 
 ### Testar os fluxos
-1. **Cadastro:** `POST http://localhost:8081/api/users/register` -> publica `UserRegisteredEvent` no RabbitMQ (e, quando os publishers SNS estiverem integrados, também no SNS que aciona a Lambda de notificações).
-2. **Compra:** iniciar compra no `catalog-api` (8082) -> pagamento aprovado -> jogo na biblioteca -> `PaymentProcessedEvent` publicado.
+1. **Cadastro:** `POST http://localhost:8081/api/users/register` -> publica `UserRegisteredEvent` no SNS (`fcg-user-events`), acionando a Lambda de notificações. Requer `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` válidos no `.env` (ver `.env.example`); sem eles, a publicação falha silenciosamente (log de warning) e o cadastro continua normal.
+2. **Compra:** iniciar compra no `catalog-api` (8082) -> `OrderPlacedEvent` via RabbitMQ -> `payments-api` processa e publica `PaymentProcessedEvent` em dois transportes: RabbitMQ (de volta pro `catalog-api`, libera o jogo na biblioteca se aprovado) e SNS (`fcg-payment-events`, aciona a Lambda de notificações).
 
 ## Como fazer deploy no Kubernetes (Minikube)
 
@@ -205,7 +205,7 @@ Recursos provisionados na AWS (conta usada pelo grupo, região `us-east-1`):
 | Filas SQS (+ DLQ) | `fcg-notifications-user-registered`, `fcg-notifications-payment-processed` |
 | Tabela DynamoDB | `fcg-notifications` |
 
-> **Pré-requisito para o fluxo ficar 100% automático:** `UsersAPI` e `PaymentsAPI` continuam publicando hoje somente no RabbitMQ (usado pelo `catalog-api` para liberar jogos na biblioteca). Para a Lambda ser acionada por uma ação real do sistema (não só por publicação manual via CLI/console), esses dois serviços também precisam publicar nos tópicos SNS acima — ver detalhes e o snippet de código sugerido no `README.md`/`SDD.md` do repositório `FIAPCloudGames-fase3-NotificationsAPI`.
+`UsersAPI` e `PaymentsAPI` publicam `UserRegisteredEvent`/`PaymentProcessedEvent` diretamente nos tópicos SNS acima (ver `Sns__TopicArn` na tabela abaixo) — o fluxo é acionado por qualquer cadastro de usuário ou pagamento processado real do sistema, sem precisar de publicação manual via CLI/console. O RabbitMQ continua em uso só para o fluxo `catalog-api` -> `payments-api` (`OrderPlacedEvent`), que não muda com essa migração.
 
 ## Variaveis de ambiente por servico
 
@@ -213,13 +213,17 @@ Recursos provisionados na AWS (conta usada pelo grupo, região `us-east-1`):
 |---|:---:|:---:|:---:|---|
 | `ConnectionStrings__DefaultConnection` | Sim | Sim | Sim | Secret |
 | `ConnectionStrings__RabbitMqConnection` | — | Sim | — | Secret |
-| `RabbitMq__Host` | Sim | — | Sim | ConfigMap |
-| `RabbitMq__Password` | Sim | — | Sim | Secret |
+| `RabbitMq__Host` | — | — | Sim | ConfigMap |
+| `RabbitMq__Password` | — | — | Sim | Secret |
+| `Sns__TopicArn` | Sim | — | Sim | ConfigMap |
+| `AWS_REGION` | Sim | — | Sim | ConfigMap |
+| `AWS_ACCESS_KEY_ID` | Sim | — | Sim | Secret |
+| `AWS_SECRET_ACCESS_KEY` | Sim | — | Sim | Secret |
 | `JwtSettings__SecretKey` | Sim | Sim | — | Secret |
 | `ASPNETCORE_ENVIRONMENT` | Sim | Sim | Sim | ConfigMap |
 | `NEW_RELIC_LICENSE_KEY` | Sim | Sim | Sim | Secret (`observability/new-relic-secret.yaml`) |
 
-> **Nota:** o `catalog-api` usa `ConnectionStrings__RabbitMqConnection` (URI `amqp://`) no lugar de `RabbitMq__*`. `users` e `catalog` compartilham a mesma `JwtSettings__SecretKey`. `payments` tem banco proprio (`paymentsdb`), mas nao usa JWT.
+> **Nota:** o `catalog-api` usa `ConnectionStrings__RabbitMqConnection` (URI `amqp://`) no lugar de `RabbitMq__*`. `users` e `catalog` compartilham a mesma `JwtSettings__SecretKey`. `payments` tem banco proprio (`paymentsdb`), nao usa JWT, e publica `PaymentProcessedEvent` em dois transportes: RabbitMQ (de volta pro `catalog-api`, libera o jogo na biblioteca) e SNS (para a Lambda do NotificationsAPI). As credenciais AWS sao só para o SNS; sem elas essa publicacao falha silenciosamente (log de warning) e o restante do fluxo (RabbitMQ/HTTP) continua normal.
 
 > **Secret** e apenas base64 (nao e cofre). Nao comite valores reais.
 

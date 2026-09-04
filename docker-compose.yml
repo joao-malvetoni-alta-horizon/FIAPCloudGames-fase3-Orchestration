@@ -4,6 +4,15 @@
 # (SNS + SQS), acionada sob demanda em vez de um container 24/7.
 # Ver repositorio FIAPCloudGames-fase3-NotificationsAPI (pasta irma) e a secao
 # "Serverless (NotificationsAPI)" do README.md deste repo.
+#
+# RabbitMQ ainda existe aqui para o fluxo Catalog -> Payments (OrderPlacedEvent) e para
+# Payments -> Catalog (PaymentProcessedEvent, que libera o jogo na biblioteca). A Lambda
+# de notificacoes e acionada via SNS: users-api publica UserRegisteredEvent so por SNS;
+# payments-api publica PaymentProcessedEvent nos DOIS transportes (RabbitMQ + SNS), pois
+# tem dois consumidores independentes. SNS exige credenciais AWS reais nas variaveis
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION (ver .env.example); sem elas, so
+# essa publicacao falha silenciosamente (log de warning) e o resto do fluxo HTTP/RabbitMQ
+# continua normal.
 # Uso:  docker-compose up --build
 #
 # Caminhos dos repos de servico (pastas irmaas deste repo).
@@ -50,18 +59,19 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=fcgdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
-      RabbitMq__Host: rabbitmq
-      RabbitMq__Port: "5672"
-      RabbitMq__Username: ${RABBITMQ_USER:-fcg}
-      RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
-      RabbitMq__VirtualHost: "/"
       JwtSettings__SecretKey: ${JWT_SECRET_KEY:-6a8a56f4d31a272d6e2f048f710c9cce45b51aa343fd6f73d8b69f1218eaac56}
       JwtSettings__ExpirationHours: "4"
+      # UserRegisteredEvent vai por SNS (consumido pela Lambda do NotificationsAPI),
+      # não mais pelo RabbitMQ. Exige credenciais AWS reais no ambiente; sem elas a
+      # publicação falha silenciosamente (log de warning) e o cadastro continua normal.
+      Sns__TopicArn: ${SNS_USER_EVENTS_TOPIC_ARN:-arn:aws:sns:us-east-1:450753703903:fcg-user-events}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     ports:
       - "8081:8080"
     depends_on:
       postgres: { condition: service_healthy }
-      rabbitmq: { condition: service_healthy }
 
   catalog-api:
     build:
@@ -86,11 +96,18 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=paymentsdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
+      # RabbitMQ: consome OrderPlacedEvent do CatalogAPI e publica PaymentProcessedEvent
+      # de volta (adiciona o jogo à biblioteca se aprovado).
       RabbitMq__Host: rabbitmq
       RabbitMq__Port: "5672"
       RabbitMq__Username: ${RABBITMQ_USER:-fcg}
       RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
       RabbitMq__VirtualHost: "/"
+      # SNS: publica o MESMO PaymentProcessedEvent para a Lambda do NotificationsAPI.
+      Sns__TopicArn: ${SNS_PAYMENT_EVENTS_TOPIC_ARN:-arn:aws:sns:us-east-1:450753703903:fcg-payment-events}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     ports:
       - "8083:8080"
     depends_on:

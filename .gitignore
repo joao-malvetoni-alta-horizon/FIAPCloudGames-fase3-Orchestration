@@ -1,33 +1,23 @@
-<<<<<<< Updated upstream
 # Variaveis reais do Compose (nunca comitar)
 .env
-.idea
+.env.*
+!.env.example
 
-# Sistema
-.DS_Store
-Thumbs.db
-=======
 # .NET
 bin/
 obj/
-.vs/
-.idea/
-
-# Rider
-*.sln.iml
-
-# User-specific files
 *.user
 *.suo
+
+# IDEs
+.vs/
+.idea/
+*.sln.iml
 
 # Logs
 *.log
 
-# Environment
-.env
-.env.*
-
-# OS
+# Sistema
 .DS_Store
 Thumbs.db
 
@@ -40,4 +30,3 @@ secrets.yaml
 *.tfstate
 *.tfstate.*
 .terraform.lock.hcl
->>>>>>> Stashed changes

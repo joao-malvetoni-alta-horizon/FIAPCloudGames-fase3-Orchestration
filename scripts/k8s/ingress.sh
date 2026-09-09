@@ -31,6 +31,7 @@ cat <<'EOF'
      Linux/Mac: /etc/hosts
      Windows:   C:\Windows\System32\drivers\etc\hosts (editar como administrador)
 
+     127.0.0.1 gateway.fcg.local
      127.0.0.1 users.fcg.local
      127.0.0.1 catalog.fcg.local
      127.0.0.1 payments.fcg.local

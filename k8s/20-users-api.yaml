@@ -22,6 +22,9 @@ spec:
               valueFrom: { configMapKeyRef: { name: fcg-config, key: ASPNETCORE_ENVIRONMENT } }
             - name: JwtSettings__ExpirationHours
               valueFrom: { configMapKeyRef: { name: fcg-config, key: JwtSettings__ExpirationHours } }
+            # Claim `iss` emitida no token; o gateway (Kong) valida este valor.
+            - name: JwtSettings__Issuer
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: JWT_ISSUER } }
             # UserRegisteredEvent vai por SNS (consumido pela Lambda do NotificationsAPI).
             - name: Sns__TopicArn
               valueFrom: { configMapKeyRef: { name: fcg-config, key: Sns__UserEventsTopicArn } }

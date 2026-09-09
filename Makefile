@@ -12,17 +12,18 @@ endif
 SHELL := $(BASH)
 NAMESPACE ?= fcg
 
-.PHONY: help k8s-start k8s-build k8s-deploy k8s-up k8s-status k8s-ingress k8s-down
+.PHONY: help k8s-start k8s-build k8s-deploy k8s-up k8s-status k8s-ingress k8s-down kong-config
 
 help:
 	@echo "Comandos disponiveis:"
 	@echo "  make k8s-up       - start do Minikube + build/load das imagens + deploy (fluxo completo)"
 	@echo "  make k8s-start    - so inicia o cluster Minikube"
 	@echo "  make k8s-build    - so builda e carrega as 4 imagens no Minikube"
-	@echo "  make k8s-deploy   - so aplica os manifestos k8s/ e espera os pods ficarem prontos"
+	@echo "  make k8s-deploy   - so aplica os manifestos k8s/ (regera a config do Kong e rola o gateway se ela mudou) e espera os pods"
 	@echo "  make k8s-status   - mostra pods, deployments, services, configmaps e secrets do namespace $(NAMESPACE)"
 	@echo "  make k8s-ingress  - habilita o Ingress do Minikube e aplica o manifesto de ingress"
 	@echo "  make k8s-down     - remove o namespace $(NAMESPACE) (derruba tudo)"
+	@echo "  make kong-config  - regera k8s/03-kong-config.yaml a partir de kong/ (rode apos editar kong/kong.yml)"
 
 k8s-start:
 	@echo "==> Iniciando o cluster Minikube"
@@ -32,6 +33,9 @@ k8s-start:
 
 k8s-build:
 	@$(BASH) scripts/k8s/build-images.sh
+
+kong-config:
+	@$(BASH) scripts/kong/sync-configmap.sh
 
 k8s-deploy:
 	@$(BASH) scripts/k8s/deploy.sh

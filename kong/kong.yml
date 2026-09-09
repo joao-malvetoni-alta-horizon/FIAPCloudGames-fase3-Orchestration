@@ -1,0 +1,296 @@
+# Configuracao declarativa do Kong (modo DB-less / "declarative config").
+#
+# Esta e a UNICA fonte de verdade do gateway: o docker-compose monta este arquivo
+# direto no container e o k8s o consome via ConfigMap gerado por `make kong-config`
+# (k8s/03-kong-config.yaml). Nao edite o ConfigMap a mao.
+#
+# Escopo atual: catalog-api e users-api. payments-api e notifications-api sao
+# consumidores de evento (so expoem /health), entao nao entram no gateway.
+#
+# Os hosts `catalog-api:8080` e `users-api:8080` funcionam nos dois ambientes:
+# sao o nome do service no Compose e o nome do Service ClusterIP no namespace fcg.
+#
+# ----------------------------------------------------------------------
+# COMO AS ROTAS SAO DESENHADAS (leia antes de adicionar um servico)
+# ----------------------------------------------------------------------
+# `strip_path: true` remove do upstream o PREFIXO QUE A ROTA CASOU -- nao apenas
+# o primeiro segmento. Isso tem uma consequencia que costuma passar batido:
+#
+#   rota /users/api/auth/login  +  service http://users-api:8080
+#     -> GET /users/api/auth/login  chega no servico como  GET /
+#        (o prefixo casado foi o caminho inteiro; sobrou nada)
+#
+# Por isso, quando a rota precisa de um caminho ESPECIFICO (para liberar so um
+# endpoint, por exemplo), o caminho do upstream vai na URL DO SERVICE e o que
+# sobra do strip e concatenado depois:
+#
+#   rota /users/api/auth/login  +  service http://users-api:8080/api/auth/login
+#     -> POST /users/api/auth/login  chega como  POST /api/auth/login   [ok]
+#
+# Ou seja: um "service" do Kong e um ENDPOINT de upstream, nao necessariamente um
+# microsservico inteiro. E normal ter varios services apontando para o mesmo host
+# com paths diferentes -- e o que permite politicas distintas por endpoint sem
+# plugin de rewrite.
+#
+# Rotas de PREFIXO amplo (ex.: /users, /catalog) nao tem esse problema: o strip
+# deixa o resto do caminho intacto, entao a URL original do servico continua
+# valendo. Elas ficam como "catch-all" no fim, protegidas por JWT.
+#
+# Precedencia: o Kong casa primeiro a rota mais especifica (prefixo mais longo e,
+# em empate, mais criterios como `methods`). Se a rota especifica nao casar por
+# metodo, a requisicao CAI na catch-all -- e portanto exige JWT. Isso e proposital:
+# a postura e "nega por padrao, libera endpoint a endpoint".
+_format_version: "3.0"
+_transform: true
+
+services:
+  # ====================================================================
+  # catalog-api
+  # ====================================================================
+
+  # --------------------------------------------------------------------
+  # 1) Swagger do catalog, aberto (sem JWT) para facilitar a exploracao.
+  #    O path /swagger vai na URL do service: a rota casa /catalog/swagger
+  #    e o strip deixaria so o resto ("/index.html"), entao e o service
+  #    que recoloca o /swagger na frente:
+  #      GET /catalog/swagger/index.html -> GET /swagger/index.html
+  #
+  #    ATENCAO: o catalog-api registra o Swagger apenas quando
+  #    ASPNETCORE_ENVIRONMENT=Development (`if (app.Environment.IsDevelopment())`
+  #    no Program.cs). Com o Production padrao do Compose/k8s, esta rota
+  #    responde 404 -- vindo do servico, nao do gateway.
+  # --------------------------------------------------------------------
+  - name: catalog-api-swagger
+    url: http://catalog-api:8080/swagger
+    connect_timeout: 5000
+    write_timeout: 30000
+    read_timeout: 30000
+    retries: 2
+    routes:
+      - name: catalog-swagger
+        paths:
+          - /catalog/swagger
+        strip_path: true
+        methods: [GET, HEAD, OPTIONS]
+
+  # --------------------------------------------------------------------
+  # 2) API do catalog, protegida por JWT no gateway (catch-all do /catalog).
+  #    strip_path remove o prefixo /catalog, entao as rotas originais do
+  #    servico continuam valendo:
+  #      GET http://localhost:8000/catalog/api/v1/games
+  #        -> GET http://catalog-api:8080/api/v1/games
+  # --------------------------------------------------------------------
+  - name: catalog-api
+    url: http://catalog-api:8080
+    # Timeouts em ms (default do Kong e 60000; encurtado para falhar rapido).
+    connect_timeout: 5000
+    write_timeout: 30000
+    read_timeout: 30000
+    retries: 2
+    routes:
+      - name: catalog-api-v1
+        paths:
+          - /catalog
+        strip_path: true
+        plugins:
+          # O users-api EMITE o token; aqui o gateway so VALIDA a assinatura
+          # antes de encostar no catalog-api (que segue validando por conta
+          # dele - defesa em profundidade, nao substituicao).
+          - name: jwt
+            config:
+              # O Kong descobre QUAL credencial usar lendo esta claim do token
+              # e casando o valor com o `key` de um jwt_secrets abaixo.
+              key_claim_name: iss
+              claims_to_verify:
+                - exp
+              secret_is_base64: false
+              # Onde procurar o token (ordem de precedencia do Kong):
+              header_names:
+                - authorization
+              # Deixa o preflight do CORS passar sem token.
+              run_on_preflight: false
+
+  # ====================================================================
+  # users-api
+  # ====================================================================
+  # Superficie real do servico (src/FCG.API/Endpoints/):
+  #   POST /api/auth/login          -> AllowAnonymous
+  #   POST /api/users/register      -> anonimo
+  #   /api/admin/users/**           -> RequireAuthorization("AdminOnly")
+  #
+  # Login e register PRECISAM ser anonimos no gateway (sao eles que produzem o
+  # token), entao ficam liberados endpoint a endpoint. Todo o resto de /users
+  # cai na catch-all e exige JWT valido.
+  # --------------------------------------------------------------------
+
+  # 1) Login: anonimo, mas com rate-limit proprio (anti brute-force).
+  - name: users-api-login
+    url: http://users-api:8080/api/auth/login
+    connect_timeout: 5000
+    write_timeout: 30000
+    read_timeout: 30000
+    retries: 2
+    routes:
+      - name: users-login
+        paths:
+          - /users/api/auth/login
+        strip_path: true
+        # Restringir o metodo e o que garante que so ESTE verbo passa sem token.
+        # Qualquer outro metodo neste caminho cai na catch-all (com JWT).
+        methods: [POST, OPTIONS]
+        plugins:
+          # Instancia de rota SUBSTITUI a global (o Kong aplica so a mais
+          # especifica de cada plugin): 20/min por IP no lugar dos 120/min.
+          # Tentativa de senha e barata para o atacante e caro para o servico.
+          - name: rate-limiting
+            config:
+              minute: 20
+              hour: 200
+              policy: local
+              limit_by: ip
+              fault_tolerant: true
+              hide_client_headers: false
+
+  # 2) Cadastro: anonimo, mesmo tratamento do login (evita flood de contas).
+  - name: users-api-register
+    url: http://users-api:8080/api/users/register
+    connect_timeout: 5000
+    write_timeout: 30000
+    read_timeout: 30000
+    retries: 2
+    routes:
+      - name: users-register
+        paths:
+          - /users/api/users/register
+        strip_path: true
+        methods: [POST, OPTIONS]
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 20
+              hour: 200
+              policy: local
+              limit_by: ip
+              fault_tolerant: true
+              hide_client_headers: false
+
+  # 3) Catch-all do /users: exige JWT no gateway.
+  #    Hoje cobre /api/admin/users/** (que o servico ainda restringe ao papel
+  #    Admin -- o plugin jwt confere assinatura/exp, nao papel). Qualquer
+  #    endpoint novo do users-api nasce protegido aqui, sem editar nada.
+  - name: users-api
+    url: http://users-api:8080
+    connect_timeout: 5000
+    write_timeout: 30000
+    read_timeout: 30000
+    retries: 2
+    routes:
+      - name: users-api-protected
+        paths:
+          - /users
+        strip_path: true
+        plugins:
+          - name: jwt
+            config:
+              key_claim_name: iss
+              claims_to_verify:
+                - exp
+              secret_is_base64: false
+              header_names:
+                - authorization
+              run_on_preflight: false
+
+# ----------------------------------------------------------------------
+# Consumers / credenciais JWT
+# ----------------------------------------------------------------------
+# ATENCAO - o casamento que faz o plugin funcionar:
+#
+#   `key` abaixo  ==  claim `iss` dos tokens emitidos pelo users-api
+#
+# Se o issuer do users-api for outro, o Kong responde 401
+# {"message":"No credentials found for given 'iss'"} para TODAS as chamadas.
+# Para descobrir o valor real, faca login no users-api e decodifique o payload
+# do token (parte do meio, base64url) - ex.: cole em https://jwt.io - ou:
+#
+#   TOKEN=<token do login>
+#   echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .iss
+#
+# O users-api EMITE essa claim a partir de JwtSettings__Issuer, e o gateway a
+# VALIDA. Nos dois casos o valor vem da MESMA variavel de ambiente JWT_ISSUER
+# (default "FCG"), justamente para nao dessincronizar: `.env` no Compose,
+# ConfigMap fcg-config no k8s. Nao e preciso editar este arquivo.
+consumers:
+  - username: fcg-users-api
+    custom_id: users-api-issuer
+    jwt_secrets:
+        # __JWT_ISSUER__ e __JWT_SECRET_KEY__ sao PLACEHOLDERS: o
+        # kong/render-and-start.sh os troca no startup do container pelos
+        # valores das variaveis de ambiente JWT_ISSUER e JWT_SECRET_KEY
+        # (do .env no Compose, do Secret fcg-secrets no k8s) e JA EMITE o
+        # valor com as aspas de YAML - por isso nao ha aspas aqui.
+        # Nenhum segredo fica versionado neste arquivo.
+        #
+        # Por que nao usamos `{vault://env/jwt-secret-key}`: o campo `secret`
+        # de jwt_secrets NAO e "referenceable" no Kong 3.9 - a referencia seria
+        # usada como a propria chave HMAC e toda validacao falharia com
+        # "Invalid signature" (comportamento verificado em teste).
+      - key: __JWT_ISSUER__
+        algorithm: HS256
+        # Mesmo segredo compartilhado por users-api (emite) e catalog-api (valida).
+        secret: __JWT_SECRET_KEY__
+
+# ----------------------------------------------------------------------
+# Plugins globais (valem para toda rota que passar pelo gateway)
+# ----------------------------------------------------------------------
+plugins:
+  # Rastreabilidade: gera/propaga um X-Correlation-ID por request e devolve
+  # o mesmo id na resposta. Facilita amarrar log do gateway com log do servico.
+  - name: correlation-id
+    config:
+      header_name: X-Correlation-ID
+      generator: uuid#counter
+      echo_downstream: true
+
+  # Metricas no formato Prometheus em http://<kong>:8100/metrics.
+  # Ja deixa o terreno pronto para a frente de observabilidade (Prometheus+Grafana).
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      upstream_health_metrics: true
+      bandwidth_metrics: true
+
+  # Protecao basica de abuso. `policy: local` conta por instancia do Kong -
+  # com 2 replicas no k8s o limite efetivo e ~2x. Trocar para `policy: redis`
+  # quando o Redis entrar no projeto.
+  #
+  # Rotas de login/register sobrescrevem estes numeros com um limite menor.
+  - name: rate-limiting
+    config:
+      minute: 120
+      hour: 2000
+      policy: local
+      fault_tolerant: true
+      hide_client_headers: false
+
+  # Rejeita payloads absurdos antes de chegar no servico.
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 10        # MB
+      size_unit: megabytes
+
+  # CORS liberado para o front consumir o gateway direto.
+  - name: cors
+    config:
+      origins:
+        - "*"
+      methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD]
+      headers:
+        - Accept
+        - Authorization
+        - Content-Type
+        - X-Correlation-ID
+      exposed_headers:
+        - X-Correlation-ID
+      credentials: false
+      max_age: 3600

@@ -35,6 +35,5 @@ cat <<'EOF'
      127.0.0.1 users.fcg.local
      127.0.0.1 catalog.fcg.local
      127.0.0.1 payments.fcg.local
-     127.0.0.1 notifications.fcg.local
      127.0.0.1 rabbitmq.fcg.local
 EOF

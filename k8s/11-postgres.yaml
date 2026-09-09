@@ -17,7 +17,6 @@ metadata:
 data:
   init.sql: |
     CREATE DATABASE catalogdb;
-    CREATE DATABASE notificationsdb;
     CREATE DATABASE paymentsdb;
 ---
 apiVersion: apps/v1

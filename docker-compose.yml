@@ -1,6 +1,22 @@
 # docker-compose unificado da FCG Fase 3 (base Fase 2 + novos componentes a adicionar).
-# Sobe a infraestrutura (RabbitMQ + PostgreSQL com 3 bancos), os 4 microsservicos
-# e o API Gateway (Kong, DB-less) na frente do users-api e do catalog-api.
+# Sobe a infraestrutura (RabbitMQ + PostgreSQL com 2 bancos) e os 3 microsservicos HTTP.
+# O notifications-api NAO roda mais aqui: foi migrado para uma funcao AWS Lambda
+# (SNS + SQS), acionada sob demanda em vez de um container 24/7.
+# Ver repositorio FIAPCloudGames-fase3-NotificationsAPI (pasta irma) e a secao
+# "Serverless (NotificationsAPI)" do README.md deste repo.
+#
+# RabbitMQ ainda existe aqui para o fluxo Catalog -> Payments (OrderPlacedEvent) e para
+# Payments -> Catalog (PaymentProcessedEvent, que libera o jogo na biblioteca). A Lambda
+# de notificacoes e acionada via SNS: users-api publica UserRegisteredEvent so por SNS;
+# payments-api publica PaymentProcessedEvent nos DOIS transportes (RabbitMQ + SNS), pois
+# tem dois consumidores independentes. SNS exige credenciais AWS reais nas variaveis
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION (ver .env.example); sem elas, so
+# essa publicacao falha silenciosamente (log de warning) e o resto do fluxo HTTP/RabbitMQ
+# continua normal.
+#
+# Na frente do users-api e do catalog-api roda o API Gateway (Kong, DB-less),
+# unico ponto de entrada em http://localhost:8000 -- ver a secao
+# "API Gateway (Kong)" do README.md.
 # Uso:  docker-compose up --build
 #
 # Caminhos dos repos de servico (pastas irmaas deste repo).
@@ -27,7 +43,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-fcg}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fcg123}
-      POSTGRES_DB: fcgdb            # banco do users; catalog/notifications vem do init.sql
+      POSTGRES_DB: fcgdb            # banco do users; catalog/payments vem do init.sql
     ports:
       - "5432:5432"
     volumes:
@@ -47,21 +63,22 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=fcgdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
-      RabbitMq__Host: rabbitmq
-      RabbitMq__Port: "5672"
-      RabbitMq__Username: ${RABBITMQ_USER:-fcg}
-      RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
-      RabbitMq__VirtualHost: "/"
       JwtSettings__SecretKey: ${JWT_SECRET_KEY:-6a8a56f4d31a272d6e2f048f710c9cce45b51aa343fd6f73d8b69f1218eaac56}
       JwtSettings__ExpirationHours: "4"
       # Claim `iss` do token. O gateway (Kong) valida exatamente este valor -
       # por isso os dois leem a MESMA variavel JWT_ISSUER.
       JwtSettings__Issuer: ${JWT_ISSUER:-FCG}
+      # UserRegisteredEvent vai por SNS (consumido pela Lambda do NotificationsAPI),
+      # não mais pelo RabbitMQ. Exige credenciais AWS reais no ambiente; sem elas a
+      # publicação falha silenciosamente (log de warning) e o cadastro continua normal.
+      Sns__TopicArn: ${SNS_USER_EVENTS_TOPIC_ARN:-arn:aws:sns:us-east-1:450753703903:fcg-user-events}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     ports:
       - "8081:8080"
     depends_on:
       postgres: { condition: service_healthy }
-      rabbitmq: { condition: service_healthy }
 
   catalog-api:
     build:
@@ -86,34 +103,26 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=paymentsdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
+      # RabbitMQ: consome OrderPlacedEvent do CatalogAPI e publica PaymentProcessedEvent
+      # de volta (adiciona o jogo à biblioteca se aprovado).
       RabbitMq__Host: rabbitmq
       RabbitMq__Port: "5672"
       RabbitMq__Username: ${RABBITMQ_USER:-fcg}
       RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
       RabbitMq__VirtualHost: "/"
+      # SNS: publica o MESMO PaymentProcessedEvent para a Lambda do NotificationsAPI.
+      Sns__TopicArn: ${SNS_PAYMENT_EVENTS_TOPIC_ARN:-arn:aws:sns:us-east-1:450753703903:fcg-payment-events}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     ports:
       - "8083:8080"
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
 
-  notifications-api:
-    build:
-      # O Dockerfile faz `COPY . .` e restaura `src/Notifications.API/...`, entao o
-      # contexto tem de ser a pasta NotificationsAPI/ -- nao a raiz do repo.
-      context: ${NOTIFICATIONS_API_PATH:-../FIAPCloudGames-fase3-NotificationsAPI}/NotificationsAPI
-      dockerfile: src/Notifications.API/Dockerfile
-    environment:
-      ASPNETCORE_ENVIRONMENT: Production
-      ConnectionStrings__DefaultConnection: "Host=postgres;Database=notificationsdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
-      RabbitMq__Host: rabbitmq
-      RabbitMq__Username: ${RABBITMQ_USER:-fcg}
-      RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
-    ports:
-      - "8084:8080"
-    depends_on:
-      postgres: { condition: service_healthy }
-      rabbitmq: { condition: service_healthy }
+  # notifications-api NAO roda mais aqui: virou uma funcao AWS Lambda
+  # (SNS + SQS). Ver README.md, secao Serverless (NotificationsAPI).
 
   # ---------- API GATEWAY ----------
   # Kong em modo DB-less: as rotas vem de kong/kong.yml (unica fonte de verdade,
@@ -122,7 +131,7 @@ services:
   # Ponto de entrada unico:
   #   http://localhost:8000/users/...     (login, register, admin)
   #   http://localhost:8000/catalog/...   (jogos, biblioteca)
-  # As portas diretas dos servicos (8081-8084) continuam abertas para debug.
+  # As portas diretas dos servicos (8081-8083) continuam abertas para debug.
   kong:
     image: kong:3.9
     # O Kong DB-less nao interpola variaveis de ambiente no YAML declarativo, e

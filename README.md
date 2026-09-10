@@ -23,7 +23,7 @@ Repositório de **orquestração** da FIAP Cloud Games (Fase 3). Parte da base d
 | Serviço | Papel | Banco | REST |
 |---|---|:---:|:---:|
 | users-api | Cadastro, login (JWT), autorização | PostgreSQL | Sim |
-| catalog-api | CRUD de jogos, inicia compra, biblioteca | PostgreSQL | Sim |
+| catalog-api | CRUD de jogos, inicia compra, biblioteca | PostgreSQL + Redis (cache) | Sim |
 | payments-api | Simula pagamento (consumidor de eventos) | PostgreSQL | Só `/health` |
 
 O antigo `notifications-api` (container 24/7 que só consumia eventos do RabbitMQ) foi **migrado para uma função AWS Lambda** — não faz mais parte do `docker-compose`/`k8s` deste repositório. Ver a seção [Serverless (NotificationsAPI)](#serverless-notificationsapi) abaixo.
@@ -40,7 +40,7 @@ Repos dos serviços:
 
 ```
 FIAPCloudGames-fase3-Orchestration/   # este repo (nome padrao do git clone)
-├── docker-compose.yml   # RabbitMQ + Postgres (2 bancos) + 3 microsservicos HTTP + Kong
+├── docker-compose.yml   # RabbitMQ + Postgres (2 bancos) + Redis + 3 microsservicos HTTP + Kong
 ├── .env.example         # variaveis do Compose (sem valores reais)
 ├── db/init.sql          # cria catalogdb e paymentsdb
 ├── kong/                # API Gateway: config declarativa (unica fonte de verdade)
@@ -119,6 +119,56 @@ curl -s http://localhost:8000/catalog/api/v1/games -H "Authorization: Bearer $TO
 > O passo 1 requer `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` validos no `.env` (ver `.env.example`); sem eles, a publicacao no SNS falha silenciosamente (log de warning) e o cadastro continua normal.
 
 4. **Compra:** iniciar compra no `catalog-api` pelo gateway -> `OrderPlacedEvent` via RabbitMQ -> `payments-api` processa e publica `PaymentProcessedEvent` em dois transportes: RabbitMQ (de volta pro `catalog-api`, libera o jogo na biblioteca se aprovado) e SNS (`fcg-payment-events`, aciona a Lambda de notificacoes).
+
+## Cache (Redis)
+
+O `catalog-api` resolve as **leituras** de catalogo e de biblioteca por um cache Redis
+(`RedisCacheService.GetOrSetAsync`): na primeira chamada vai ao Postgres e grava o
+resultado; nas seguintes responde do cache ate o TTL expirar.
+
+| Rota | Chave | TTL |
+|---|---|---|
+| `GET /catalog/api/v1/games` | `games:all:page={p}:size={n}` | 3 min |
+| `GET /catalog/api/v1/games/{id}` | `games:{id}` | 3 min |
+| `GET /catalog/api/v1/library` | `libraries:all:userId={id}:page={p}:size={n}` | 3 min |
+
+**O Redis nao e opcional.** Sem a variavel `ConnectionStrings__Redis` o servico cai no
+default do `appsettings.json` (`localhost:6379`), nao acha ninguem e devolve **500 em
+toda leitura** -- com o banco de pe, o gateway roteando certo e nenhum erro de config
+aparente. Quem configura isso e este repo:
+
+| Ambiente | Servico Redis | Variavel do catalog-api |
+|---|---|---|
+| Compose | servico `redis` no `docker-compose.yml` | `ConnectionStrings__Redis` (montada de `REDIS_USER`/`REDIS_PASS`) |
+| k8s | `k8s/12-redis.yaml` (Deployment + Service) | `ConnectionStrings__Redis` <- Secret `Catalog__RedisConnection` |
+
+Nos dois casos a conexao usa um **usuario de ACL** (`fcg`), nao `requirepass`: a
+connection string do StackExchange.Redis manda `user=...,password=...`, e usuario
+nomeado so existe via ACL. O usuario `default` fica desligado, entao ninguem le o
+cache sem credencial. O `abortConnect=false` na string deixa o app subir mesmo com o
+Redis ainda fora do ar.
+
+O cache e **volatil de proposito** (sem PVC no k8s, sem volume no Compose, RDB e AOF
+desligados): o conteudo e descartavel e se repopula na primeira leitura.
+
+Inspecionar o cache:
+
+```bash
+# k8s
+kubectl exec -n fcg deploy/redis -- \
+  redis-cli --user fcg --pass fcg123 --no-auth-warning KEYS '*'
+
+# Compose
+docker-compose exec redis \
+  redis-cli --user fcg --pass fcg123 --no-auth-warning KEYS '*'
+```
+
+> **Escrita nao invalida a leitura.** Hoje o `catalog-api` so remove a chave `games:{id}`
+> no update/delete de um jogo. Nada invalida as listas: comprar um jogo grava na
+> biblioteca mas **nao** apaga `libraries:all:userId=...`, entao o `GET /library` continua
+> devolvendo a biblioteca antiga por ate 3 minutos apos a compra. Mesma coisa para
+> `games:all:...` apos criar/apagar um jogo. E comportamento do `catalog-api`, nao da
+> orquestracao -- ao testar o fluxo de compra, conte com essa janela.
 
 ## API Gateway (Kong)
 
@@ -664,6 +714,35 @@ O token tem `iss`, mas com valor diferente do que o gateway espera. Os dois lado
 
 O Kong le a config declarativa uma vez, no startup. Rode `make k8s-deploy` (que propaga o hash e rola o gateway) ou `kubectl rollout restart deployment/kong -n fcg`.
 
+### `500 Erro interno` em `/catalog/api/v1/games` ou `/catalog/api/v1/library`
+
+Falta o Redis. Nos logs do pod aparece `StackExchange.Redis.RedisConnectionException:
+UnableToConnect ... on localhost:6379` — o `localhost` entrega o diagnostico: o servico
+nao recebeu `ConnectionStrings__Redis` e caiu no default do `appsettings.json`. Confira:
+
+```bash
+kubectl get pods -n fcg -l app=redis                       # o Redis subiu?
+kubectl get deploy catalog-api -n fcg -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' | tr ' ' '\n' | grep Redis
+```
+
+Se a variavel nao aparecer, o Deployment esta defasado em relacao a `k8s/21-catalog-api.yaml`
+— rode `make k8s-deploy`. Ver [Cache (Redis)](#cache-redis).
+
+### Comprei um jogo, veio `202`, mas a biblioteca continua vazia
+
+Se os logs do `payments-api` mostram `Pagamento processado ... Approved` e o `catalog-api`
+registra o `PaymentProcessedEventHandler`, o fluxo funcionou e o que voce esta lendo e o
+**cache**: o `GET /library` foi cacheado (3 min) antes da compra e nada o invalida. Para
+confirmar, leia com outro `pageSize` (chave de cache diferente, vai ao banco):
+
+```bash
+curl -s "$GATEWAY/catalog/api/v1/library/?page=1&pageSize=19" -H "Authorization: Bearer $TOKEN"
+```
+
+Ver a nota em [Cache (Redis)](#cache-redis). Se o `catalog-api` estiver em loop de
+`ACCESS_REFUSED`, ai sim o evento nunca saiu: o Deployment nao esta injetando
+`RabbitMq__Username`/`RabbitMq__Password` e o app usa o `guest`/`pass` do `appsettings.json`.
+
 ## Serverless (NotificationsAPI)
 
 O `NotificationsAPI` da Fase 2 (container ASP.NET Core rodando 24/7 no Kubernetes, só para consumir eventos do RabbitMQ) foi **migrado para uma função AWS Lambda**, atendendo ao requisito obrigatório de "Migração para Arquitetura Serverless" da Fase 3.
@@ -691,9 +770,12 @@ Recursos provisionados na AWS (conta usada pelo grupo, região `us-east-1`):
 | Variavel | users | catalog | payments | Origem |
 |---|:---:|:---:|:---:|---|
 | `ConnectionStrings__DefaultConnection` | Sim | Sim | Sim | Secret |
-| `ConnectionStrings__RabbitMqConnection` | — | Sim | — | Secret |
-| `RabbitMq__Host` | — | — | Sim | ConfigMap |
-| `RabbitMq__Password` | — | — | Sim | Secret |
+| `ConnectionStrings__Redis` | — | Sim | — | Secret (`Catalog__RedisConnection`) |
+| `RabbitMq__Host` | — | Sim | Sim | ConfigMap |
+| `RabbitMq__Port` | — | Sim | Sim | ConfigMap |
+| `RabbitMq__Username` | — | Sim | Sim | ConfigMap |
+| `RabbitMq__VirtualHost` | — | Sim | Sim | ConfigMap |
+| `RabbitMq__Password` | — | Sim | Sim | Secret |
 | `Sns__TopicArn` | Sim | — | Sim | ConfigMap |
 | `AWS_REGION` | Sim | — | Sim | ConfigMap |
 | `AWS_ACCESS_KEY_ID` | Sim | — | Sim | Secret |
@@ -711,7 +793,7 @@ O gateway consome duas variaveis proprias:
 
 As demais variaveis do Kong (`KONG_*`) sao fixas no manifesto/Compose e nao dependem de ConfigMap nem Secret. As que valem conhecer: `KONG_ADMIN_LISTEN` (Admin API no loopback do pod), `KONG_TRUSTED_IPS`/`KONG_REAL_IP_HEADER`/`KONG_REAL_IP_RECURSIVE` (IP real do cliente atras do Ingress, para o rate-limit por IP) e `KONG_HEADERS=latency_tokens` (mantem os headers de latencia, tira o `Server: kong/<versao>`).
 
-> **Nota:** o `catalog-api` usa `ConnectionStrings__RabbitMqConnection` (URI `amqp://`) no lugar de `RabbitMq__*`. `users` e `catalog` compartilham a mesma `JwtSettings__SecretKey`. `payments` tem banco proprio (`paymentsdb`), nao usa JWT, e publica `PaymentProcessedEvent` em dois transportes: RabbitMQ (de volta pro `catalog-api`, libera o jogo na biblioteca) e SNS (para a Lambda do NotificationsAPI). As credenciais AWS sao só para o SNS; sem elas essa publicacao falha silenciosamente (log de warning) e o restante do fluxo (RabbitMQ/HTTP) continua normal.
+> **Nota:** o `catalog-api` le a secao `RabbitMq:` como o `payments-api` — as mesmas keys. (Ele ja usou uma URI `amqp://` em `ConnectionStrings__RabbitMqConnection`; se voltar a injetar so aquela, o app cai no `guest`/`pass` do `appsettings.json` e o broker recusa com `ACCESS_REFUSED`.) O `catalog-api` e tambem o unico que usa Redis — ver [Cache (Redis)](#cache-redis). `users` e `catalog` compartilham a mesma `JwtSettings__SecretKey`. `payments` tem banco proprio (`paymentsdb`), nao usa JWT, e publica `PaymentProcessedEvent` em dois transportes: RabbitMQ (de volta pro `catalog-api`, libera o jogo na biblioteca) e SNS (para a Lambda do NotificationsAPI). As credenciais AWS sao só para o SNS; sem elas essa publicacao falha silenciosamente (log de warning) e o restante do fluxo (RabbitMQ/HTTP) continua normal.
 
 > **Secret** e apenas base64 (nao e cofre). Nao comite valores reais.
 

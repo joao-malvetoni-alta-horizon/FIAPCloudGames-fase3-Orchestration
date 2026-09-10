@@ -20,13 +20,28 @@ spec:
           env:
             - name: ASPNETCORE_ENVIRONMENT
               valueFrom: { configMapKeyRef: { name: fcg-config, key: ASPNETCORE_ENVIRONMENT } }
-            # Catálogo usa URI amqp:// (não usa RabbitMq__Host).
+            # Catálogo lê a seção `RabbitMq:` como todo mundo -- as mesmas keys do
+            # payments-api. (Ele já usou uma URI amqp:// em `ConnectionStrings`; se
+            # voltar a injetar só aquela, o app cai no guest/pass do appsettings.json
+            # e o broker recusa a conexão com ACCESS_REFUSED.)
+            - name: RabbitMq__Host
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Host } }
+            - name: RabbitMq__Port
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Port } }
+            - name: RabbitMq__Username
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__Username } }
+            - name: RabbitMq__VirtualHost
+              valueFrom: { configMapKeyRef: { name: fcg-config, key: RabbitMq__VirtualHost } }
+            - name: RabbitMq__Password
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: RabbitMq__Password } }
             - name: JwtSettings__SecretKey
               valueFrom: { secretKeyRef: { name: fcg-secrets, key: JwtSettings__SecretKey } }
             - name: ConnectionStrings__DefaultConnection
               valueFrom: { secretKeyRef: { name: fcg-secrets, key: Catalog__ConnectionString } }
-            - name: ConnectionStrings__RabbitMqConnection
-              valueFrom: { secretKeyRef: { name: fcg-secrets, key: Catalog__RabbitMqConnection } }
+            # Cache das leituras de jogos/biblioteca (k8s/12-redis.yaml). Sem esta
+            # variável o app tenta localhost:6379 e devolve 500 em toda leitura.
+            - name: ConnectionStrings__Redis
+              valueFrom: { secretKeyRef: { name: fcg-secrets, key: Catalog__RedisConnection } }
           # Catálogo não expõe /health: sonda TCP na porta 8080.
           livenessProbe:
             tcpSocket: { port: 8080 }

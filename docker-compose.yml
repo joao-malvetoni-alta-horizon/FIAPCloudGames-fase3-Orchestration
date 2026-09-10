@@ -55,6 +55,27 @@ services:
       timeout: 5s
       retries: 10
 
+  # Cache de leitura do catalog-api (GET de jogos e da biblioteca passam por ele).
+  # Sem este servico o catalog-api cai no default do appsettings (localhost:6379)
+  # e devolve 500 em toda leitura. ACL com usuario nomeado porque a connection
+  # string do StackExchange.Redis manda `user=...`; `default off` fecha o anonimo.
+  # Sem volume: e cache, o conteudo e descartavel e se repopula na primeira leitura.
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --user default off
+      --user ${REDIS_USER:-fcg} on ">${REDIS_PASS:-fcg123}" "~*" "&*" "+@all"
+      --save ""
+      --appendonly no
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--user", "${REDIS_USER:-fcg}", "--pass", "${REDIS_PASS:-fcg123}", "--no-auth-warning", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   # ---------- SERVICOS ----------
   users-api:
     build:
@@ -86,15 +107,25 @@ services:
       dockerfile: src/CatalogAPI.API/Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      # catalog e a EXCECAO: usa connection string unica de RabbitMQ (URI amqp://).
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=catalogdb;Username=${POSTGRES_USER:-fcg};Password=${POSTGRES_PASSWORD:-fcg123}"
-      ConnectionStrings__RabbitMqConnection: "amqp://${RABBITMQ_USER:-fcg}:${RABBITMQ_PASS:-fcg123}@rabbitmq:5672"
+      # Cache das leituras de jogos/biblioteca. `abortConnect=false` deixa o app subir
+      # mesmo com o Redis ainda fora do ar (reconecta sozinho).
+      ConnectionStrings__Redis: "redis:6379,user=${REDIS_USER:-fcg},password=${REDIS_PASS:-fcg123},abortConnect=false"
+      # Catalogo le a secao `RabbitMq:`, as mesmas keys do payments-api. Injetar so a
+      # URI em ConnectionStrings__RabbitMqConnection faz o app usar o guest/pass do
+      # appsettings.json e o broker recusa com ACCESS_REFUSED.
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: ${RABBITMQ_USER:-fcg}
+      RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
+      RabbitMq__VirtualHost: "/"
       JwtSettings__SecretKey: ${JWT_SECRET_KEY:-6a8a56f4d31a272d6e2f048f710c9cce45b51aa343fd6f73d8b69f1218eaac56}
     ports:
       - "8082:8080"
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
 
   payments-api:
     build:

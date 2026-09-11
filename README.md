@@ -1,6 +1,6 @@
 # FCG Orchestration (Fase 3)
 
-Repositório de **orquestração** da FIAP Cloud Games (Fase 3). Parte da base da Fase 2 (RabbitMQ, PostgreSQL, `docker-compose` e manifestos Kubernetes) e concentra aqui as novas capacidades obrigatórias do Tech Challenge: **API Gateway (Kong)** (feito, cobrindo `users-api` e `catalog-api` -- ver [API Gateway (Kong)](#api-gateway-kong)), **Observabilidade (New Relic)**, **MongoDB**, **Redis** e a migração do `NotificationsAPI` para **Serverless (AWS Lambda)**.
+Repositório de **orquestração** da FIAP Cloud Games (Fase 3). Parte da base da Fase 2 (RabbitMQ, PostgreSQL, `docker-compose` e manifestos Kubernetes) e concentra aqui as novas capacidades obrigatórias do Tech Challenge: **API Gateway (Kong)** (feito, cobrindo `users-api`, `catalog-api`, `payments-api` e, localmente, o `NotificationsAPI` -- ver [API Gateway (Kong)](#api-gateway-kong)), **Observabilidade (New Relic)**, **MongoDB**, **Redis** e a migração do `NotificationsAPI` para **Serverless (AWS Lambda)**.
 
 > **Com pressa?** O gateway responde em `http://localhost:8000` (Docker) ou `http://gateway.fcg.local` (Kubernetes com Ingress). A tabela de [onde chamar o gateway](#onde-chamar-o-gateway) tem a URL base de cada forma de subir o projeto.
 
@@ -24,9 +24,9 @@ Repositório de **orquestração** da FIAP Cloud Games (Fase 3). Parte da base d
 |---|---|:---:|:---:|
 | users-api | Cadastro, login (JWT), autorização | PostgreSQL | Sim |
 | catalog-api | CRUD de jogos, inicia compra, biblioteca | PostgreSQL + Redis (cache) | Sim |
-| payments-api | Simula pagamento (consumidor de eventos) | PostgreSQL | Só `/health` |
+| payments-api | Simula pagamento (consumidor de eventos) | PostgreSQL | Sim (consulta e disparo manual) |
 
-O antigo `notifications-api` (container 24/7 que só consumia eventos do RabbitMQ) foi **migrado para uma função AWS Lambda** — não faz mais parte do `docker-compose`/`k8s` deste repositório. Ver a seção [Serverless (NotificationsAPI)](#serverless-notificationsapi) abaixo.
+O antigo `notifications-api` (container 24/7 que só consumia eventos do RabbitMQ) foi **migrado para uma função AWS Lambda**, e é assim que ele roda em produção. Localmente, o `docker-compose` e o `k8s` deste repositório rodam o mesmo código no emulador da Lambda, atrás do Kong, só para teste — ver [NotificationsAPI local (via Kong)](#notificationsapi-local-via-kong) e [Serverless (NotificationsAPI)](#serverless-notificationsapi).
 
 Repos dos serviços:
 - users-api: https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-UsersAPI
@@ -47,6 +47,7 @@ FIAPCloudGames-fase3-Orchestration/   # este repo (nome padrão do git clone)
 │   ├── kong.yml             # services, routes, plugins e credencial JWT
 │   └── render-and-start.sh  # injeta segredo/issuer e sobe o Kong
 ├── k8s/                 # manifestos agregados (kubectl apply -f k8s/)
+├── notifications-local/ # NotificationsAPI só local: Dockerfile da Lambda + init do DynamoDB
 ├── observability/       # secret/manifestos de New Relic
 ├── docs/                # documentação de observabilidade
 ├── scripts/             # automação (k8s/ e kong/)
@@ -63,7 +64,7 @@ pasta-pai/
 ├── FIAPCloudGames-fase3-UsersAPI/
 ├── FIAPCloudGames-fase3-CatalogAPI/
 ├── FIAPCloudGames-fase3-PaymentsAPI/
-└── FIAPCloudGames-fase3-NotificationsAPI/   # código + IaC da função Lambda (não entra no compose/k8s)
+└── FIAPCloudGames-fase3-NotificationsAPI/   # código + IaC da função Lambda (em produção roda na AWS; localmente, no emulador)
 ```
 
 ```bash
@@ -88,13 +89,14 @@ Pré-requisito: os repos de serviço devem estar como **irmãos** deste, com os 
 cd FIAPCloudGames-fase3-Orchestration
 cp .env.example .env        # ajuste caminhos se renomeou pastas
 docker-compose up --build
-docker-compose ps           # todos healthy/running
+docker-compose ps           # todos healthy/running; o notifications-dynamodb-init
+                            # sai com Exited (0) de propósito: ele só cria a tabela
 ```
 
-Portas locais: **gateway (Kong) `8000`**, users `8081`, catalog `8082`, payments `8083` (interno sempre `8080`).
+Portas locais: **gateway (Kong) `8000`**, users `8081`, catalog `8082`, payments `8083`, notifications `8084` (cadastro) e `8085` (pagamento) direto no emulador da Lambda (interno sempre `8080`).
 Painel do RabbitMQ: http://localhost:15672 (fcg/fcg123).
 
-> As portas diretas (8081-8083) continuam abertas para debug, mas o caminho "oficial" de `users` e `catalog` agora é o gateway na `8000` -- ver [API Gateway (Kong)](#api-gateway-kong).
+> As portas diretas (8081-8085) continuam abertas para debug, mas o caminho "oficial" de `users`, `catalog`, `payments` e `notifications` agora é o gateway na `8000` -- ver [API Gateway (Kong)](#api-gateway-kong).
 
 ### Testar os fluxos
 
@@ -102,7 +104,7 @@ Tudo pelo gateway (`localhost:8000`):
 
 ```bash
 # 1. Cadastro (rota anônima) -> publica UserRegisteredEvent no SNS (fcg-user-events),
-#    acionando a Lambda de notificações
+#    acionando a Lambda de notificações na AWS
 curl -s -X POST http://localhost:8000/users/api/users/register \
   -H "Content-Type: application/json" \
   -d '{"name":"Teste","email":"teste@fcg.com","password":"Senha123!"}'
@@ -119,6 +121,8 @@ curl -s http://localhost:8000/catalog/api/v1/games -H "Authorization: Bearer $TO
 > O passo 1 requer `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` válidos no `.env` (ver `.env.example`); sem eles, a publicação no SNS falha silenciosamente (log de warning) e o cadastro continua normal.
 
 4. **Compra:** iniciar compra no `catalog-api` pelo gateway -> `OrderPlacedEvent` via RabbitMQ -> `payments-api` processa e publica `PaymentProcessedEvent` em dois transportes: RabbitMQ (de volta pro `catalog-api`, libera o jogo na biblioteca se aprovado) e SNS (`fcg-payment-events`, aciona a Lambda de notificações).
+
+5. **Notificações (só local):** os passos 1 e 4 publicam no SNS **da AWS**, então não acionam as funções que rodam aqui. Localmente, o NotificationsAPI é chamado pelas rotas `/notifications/...` do gateway — ver [Testando as notificações](#testando-as-notificações).
 
 ## Cache (Redis)
 
@@ -174,7 +178,7 @@ docker-compose exec redis \
 
 Ponto de entrada único das APIs. Roda em modo **DB-less** (sem Postgres próprio): toda a configuração vem do arquivo declarativo `kong/kong.yml`.
 
-**Escopo atual: `users-api` e `catalog-api`.** `payments-api` (consumidor de evento, só expõe `/health`) e a Lambda serverless do `NotificationsAPI` (fora do cluster) não entram no gateway.
+**Escopo atual: `users-api`, `catalog-api`, `payments-api` e, só localmente, o `NotificationsAPI`.** Em produção o NotificationsAPI é uma função Lambda acionada por SQS, sem gatilho HTTP, e não passa por gateway. Localmente o mesmo código roda no emulador da Lambda e o Kong o invoca -- ver [NotificationsAPI local (via Kong)](#notificationsapi-local-via-kong).
 
 `kong/kong.yml` é a **única fonte de verdade**: o `docker-compose` monta a pasta `kong/` como volume, e no Kubernetes o mesmo conteúdo é empacotado no ConfigMap `k8s/03-kong-config.yaml`, que é **gerado** por `make kong-config` (não edite o ConfigMap à mão).
 
@@ -207,6 +211,11 @@ curl -s -X POST $GATEWAY/users/api/auth/login -H "Content-Type: application/json
 | `/users/**` (resto, hoje `/api/admin/users/**`) | `users-api:8080/**` | **sim** |
 | `GET /catalog/swagger/...` | `catalog-api:8080/swagger/...` | não |
 | `/catalog/**` (resto) | `catalog-api:8080/**` | **sim** |
+| `GET /payments/health` | `payments-api:8080/health` | não |
+| `POST /payments/process` | `payments-api:8080/payments/process` | **sim** (+ limite de 30 req/min) |
+| `/payments/**` (resto: `GET /payments`, `/{id}`, `/by-event/{eventId}`) | `payments-api:8080/payments/**` | **sim** |
+| `POST /notifications/user-registered` *(só local)* | `notifications-user-registered:8080/2015-03-31/functions/function/invocations` | **sim** |
+| `POST /notifications/payment-processed` *(só local)* | `notifications-payment-processed:8080/2015-03-31/functions/function/invocations` | **sim** |
 
 O `strip_path` do Kong remove o prefixo, então as rotas originais dos serviços continuam valendo:
 
@@ -405,6 +414,13 @@ E o roteamento (o que o serviço realmente recebe):
 | `GET /users/api/admin/users` | `GET users-api:8080/api/admin/users` |
 | `GET /catalog/api/v1/games` | `GET catalog-api:8080/api/v1/games` |
 | `GET /catalog/swagger/index.html` | `GET catalog-api:8080/swagger/index.html` |
+| `GET /payments/health` | `GET payments-api:8080/health` |
+| `GET /payments` | `GET payments-api:8080/payments` (sem strip -- ver abaixo) |
+| `GET /payments/by-event/{eventId}` | `GET payments-api:8080/payments/by-event/{eventId}` |
+
+> **Por que o `/payments` não usa `strip_path`.** Em `users` e `catalog` o prefixo do gateway não existe no serviço, então precisa sair. No `payments-api` é o contrário: o controller já vive em `/payments`, o mesmo prefixo do gateway. Com `strip_path: true` a catch-all mandaria `GET /payments` como `GET /` e o serviço responderia 404. Por isso ela usa `strip_path: false` e repassa o caminho inteiro. O `/payments/health` segue a regra geral (caminho na URL do service), porque no serviço o health vive na raiz.
+
+> **Limite de autorização do `payments-api`.** Nenhum endpoint do serviço tem `[Authorize]` -- ele nasceu como consumidor de evento e a API REST veio depois, para demonstração. Aqui o gateway é a **única** camada de autenticação (users e catalog validam o token de novo por conta própria). E ela confere assinatura e `exp`, não papel: `GET /payments` lista os pagamentos de **todos** os usuários, e qualquer usuário autenticado consegue lê-los. Fechar isso exige um `AdminOnly` no próprio `payments-api`, como o `users-api` faz em `/api/admin/users/**`.
 
 > **Swagger:** os dois serviços registram o Swagger apenas quando `ASPNETCORE_ENVIRONMENT=Development` (`if (app.Environment.IsDevelopment())` no `Program.cs`). Compose e k8s rodam em `Production`, então `/catalog/swagger` responde **404 vindo do serviço** -- a rota do gateway está certa, o Swagger é que não existe naquele ambiente. Para explorar o contrato, suba o serviço com `ASPNETCORE_ENVIRONMENT=Development` e use a porta direta (`http://localhost:8082/swagger`): o `swagger.json` gerado pelo ASP.NET aponta para o caminho absoluto `/swagger/v1/swagger.json`, sem o prefixo `/catalog`, então o "Try it out" pelo gateway não carregaria o schema.
 
@@ -501,13 +517,13 @@ Requisitos: `docker`, `minikube`, `kubectl` e `make` instalados. No Windows, rod
 ```bash
 cp .env.example .env   # se ainda não fez isso para o Compose
 
-make k8s-up            # start do Minikube + build/load das 3 imagens + apply + espera os pods ficarem prontos
+make k8s-up            # start do Minikube + build/load das 4 imagens + apply + espera os pods ficarem prontos
 make k8s-status        # ve pods, deployments, services, configmaps e secrets
 make k8s-ingress       # (opcional) habilita o Ingress e aplica o manifesto de ingress
 make k8s-down          # derruba tudo (remove o namespace fcg)
 ```
 
-`make help` lista todos os comandos disponíveis. Os scripts usados pelo Makefile ficam em `scripts/k8s/` e leem os caminhos dos repos irmãos do `.env` (mesmas variáveis do Compose: `USERS_API_PATH`, etc.).
+`make help` lista todos os comandos disponíveis. Os scripts usados pelo Makefile ficam em `scripts/k8s/` e leem os caminhos dos repos irmãos do `.env` (mesmas variáveis do Compose: `USERS_API_PATH`, `NOTIFICATIONS_API_PATH`, etc.). As 4 imagens são as das três APIs e a da Lambda local do NotificationsAPI — ver [NotificationsAPI local (via Kong)](#notificationsapi-local-via-kong).
 
 O `minikube tunnel` e a edição do arquivo de hosts (necessários só para o Ingress) continuam manuais — ver o passo a passo abaixo.
 
@@ -519,7 +535,7 @@ O `minikube tunnel` e a edição do arquivo de hosts (necessários só para o In
 minikube start
 ```
 
-**2. Build + carga das 3 imagens no cluster local** (ajuste os caminhos se renomeou as pastas após o clone)
+**2. Build + carga das 4 imagens no cluster local** (ajuste os caminhos se renomeou as pastas após o clone)
 
 ```bash
 docker build -t fcg/users-api:1.0 ../FIAPCloudGames-fase3-UsersAPI -f ../FIAPCloudGames-fase3-UsersAPI/src/FCG.API/Dockerfile
@@ -528,9 +544,17 @@ docker build -t fcg/catalog-api:1.0 ../FIAPCloudGames-fase3-CatalogAPI -f ../FIA
 minikube image load fcg/catalog-api:1.0
 docker build -t fcg/payments-api:1.0 ../FIAPCloudGames-fase3-PaymentsAPI -f ../FIAPCloudGames-fase3-PaymentsAPI/src/FCG.API/Dockerfile
 minikube image load fcg/payments-api:1.0
+
+# NotificationsAPI (só local): o Dockerfile mora neste repo, em notifications-local/,
+# e o código do repo irmão entra no build como contexto nomeado, só leitura
+docker build --build-context notificationsapi=../FIAPCloudGames-fase3-NotificationsAPI/NotificationsAPI \
+  -t fcg/notifications-lambda:1.0 notifications-local
+minikube image load fcg/notifications-lambda:1.0
 ```
 
-> O Kong não entra aqui: ele usa a imagem oficial `kong:3.9`, baixada do Docker Hub pelo próprio cluster.
+> O Kong (`kong:3.9`), o DynamoDB Local (`amazon/dynamodb-local`) e o AWS CLI que cria a tabela (`amazon/aws-cli`) não entram aqui: são imagens oficiais, baixadas do Docker Hub pelo próprio cluster.
+>
+> Rebuildou uma imagem que **já está rodando** no cluster? O `minikube image load` não troca a tag de uma imagem em uso e ainda assim termina com sucesso — o `make k8s-build` detecta isso e rola os Deployments; na mão, escale o Deployment para 0 antes do `load` (ver o troubleshooting do `401 ... 'iss'`).
 
 **3. Regerar o ConfigMap do gateway** (só é obrigatório se você editou `kong/kong.yml`; o arquivo gerado está versionado)
 
@@ -540,12 +564,22 @@ bash scripts/kong/sync-configmap.sh    # o mesmo que `make kong-config`
 
 **4. Aplicar os manifestos** (a numeração dos arquivos garante a ordem)
 
+Antes, crie o ConfigMap com o script que cria a tabela do NotificationsAPI. Ele **não** está em `k8s/`: é gerado do arquivo `notifications-local/init-dynamodb.sh`, para não existir uma cópia colada no manifesto. Sem ele, o pod `notifications-dynamodb` fica preso em `ContainerCreating`.
+
 ```bash
+kubectl apply -f k8s/00-namespace.yaml     # o ConfigMap precisa do namespace
+kubectl create configmap notifications-dynamodb-init -n fcg \
+  --from-file=init-dynamodb.sh=notifications-local/init-dynamodb.sh \
+  --dry-run=client -o yaml | kubectl apply -f -
+
 kubectl apply -f k8s/
 
 # Se o ConfigMap do Kong mudou no passo 3, force o rollout:
 # o Kong lê a config declarativa uma vez, no startup.
 kubectl rollout restart deployment/kong -n fcg
+
+# Idem se você editou notifications-local/init-dynamodb.sh: o script só roda na subida do pod.
+kubectl rollout restart deployment/notifications-dynamodb -n fcg
 ```
 
 **5. Verificar**
@@ -554,6 +588,16 @@ kubectl rollout restart deployment/kong -n fcg
 kubectl get pods -n fcg
 kubectl get deployments,services,configmaps,secrets -n fcg
 kubectl rollout status deployment/kong -n fcg
+
+# NotificationsAPI (só local)
+kubectl rollout status deployment/notifications-dynamodb -n fcg       # 2/2: DynamoDB + init da tabela
+kubectl rollout status deployment/notifications-user-registered -n fcg
+kubectl rollout status deployment/notifications-payment-processed -n fcg
+
+# a tabela existe? (esperado: ACTIVE)
+kubectl exec -n fcg deploy/notifications-dynamodb -c init-table -- \
+  aws dynamodb describe-table --table-name fcg-notifications \
+  --endpoint-url http://localhost:8000 --query Table.TableStatus --output text
 ```
 
 **6. Onde fazer as requisições**
@@ -585,6 +629,12 @@ curl -i $GATEWAY/catalog/api/v1/games -H "Authorization: Bearer $TOKEN"
 
 # sem token o gateway barra (401), sem nem encostar no serviço
 curl -i $GATEWAY/catalog/api/v1/games
+
+# notificações (só local): invoca a função do NotificationsAPI pelo gateway
+curl -s -X POST $GATEWAY/notifications/user-registered \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"UserId":"11111111-1111-1111-1111-111111111111","Name":"Ana","Email":"ana@exemplo.com","EventId":"22222222-2222-2222-2222-222222222222","OccurredAt":"2026-09-10T12:00:00Z"}'
+# {"batchItemFailures":[]}   -- mais exemplos em "Testando as notificações"
 ```
 
 **Opção B -- Ingress**, se você quiser as URLs com hostname (`http://gateway.fcg.local`, sem porta): ver [Expor as APIs com Ingress](#expor-as-apis-com-ingress-alternativa-ao-port-forward). Exige `minikube tunnel` e uma entrada no arquivo de hosts.
@@ -594,8 +644,13 @@ Para debug, o `port-forward` também serve para bater direto em um serviço, **d
 ```bash
 kubectl port-forward service/users-api 8081:8080 -n fcg     # http://localhost:8081/api/auth/login
 kubectl port-forward service/catalog-api 8082:8080 -n fcg   # http://localhost:8082/api/v1/games
+kubectl port-forward service/payments-api 8083:8080 -n fcg  # http://localhost:8083/health
+kubectl port-forward service/notifications-user-registered 8084:8080 -n fcg     # emulador da Lambda (ver nota)
+kubectl port-forward service/notifications-payment-processed 8085:8080 -n fcg   # idem
 kubectl port-forward service/kong-proxy 8100:8100 -n fcg    # http://localhost:8100/status/ready e /metrics
 ```
+
+> Direto no emulador da Lambda não há Kong: o endpoint é `POST http://localhost:8084/2015-03-31/functions/function/invocations` e o corpo tem de ser o **envelope SQS** (`{"Records":[...]}`, como os `events/*.json` do repo do NotificationsAPI) — é o gateway que embrulha o evento puro. Sem o envelope a resposta é HTTP 200 com `NullReferenceException` no corpo (ver [troubleshooting](#nullreferenceexception-chamando-o-emulador-da-lambda-direto)).
 
 > Cada `port-forward` ocupa um terminal e cuida de **um** Service. É normal ter dois ou três abertos ao mesmo tempo (um por porta local).
 
@@ -603,7 +658,7 @@ kubectl port-forward service/kong-proxy 8100:8100 -n fcg    # http://localhost:8
 
 O `port-forward` é só para teste manual (uma porta, um serviço, uma sessão). Para expor **todas** as APIs de uma vez, com um único ponto de entrada, usamos um `Ingress` (`k8s/30-ingress.yaml`), que roteia por hostname para cada Service.
 
-> **Kong.** O API Gateway (validação de JWT + roteamento para `users-api`/`catalog-api`) tem manifestos próprios (`k8s/03-kong-config.yaml`, `k8s/24-kong.yaml`, `kong/kong.yml`) e um host dedicado no Ingress (`gateway.fcg.local`, ver tabela abaixo). Ele é o caminho **oficial** de entrada; o Ingress nginx com um host por serviço, descrito a seguir, continua existindo como atalho de debug.
+> **Kong.** O API Gateway (validação de JWT + roteamento para `users-api`/`catalog-api`/`payments-api` e, localmente, as funções do NotificationsAPI) tem manifestos próprios (`k8s/03-kong-config.yaml`, `k8s/24-kong.yaml`, `kong/kong.yml`) e um host dedicado no Ingress (`gateway.fcg.local`, ver tabela abaixo). Ele é o caminho **oficial** de entrada; o Ingress nginx com um host por serviço, descrito a seguir, continua existindo como atalho de debug.
 
 ```bash
 # 1. Habilitar o controller de Ingress do Minikube (só uma vez por cluster)
@@ -639,7 +694,7 @@ Agora cada API responde no seu hostname, na porta 80 (sem porta na URL). São **
 
 | Hostname | O que é | Rotas |
 |---|---|---|
-| `gateway.fcg.local` | **o API Gateway (Kong)** -- caminho oficial | `/users/...`, `/catalog/...` (com prefixo) |
+| `gateway.fcg.local` | **o API Gateway (Kong)** -- caminho oficial | `/users/...`, `/catalog/...`, `/payments/...`, `/notifications/...` (com prefixo) |
 | `users.fcg.local`, `catalog.fcg.local`, ... | atalho direto pro Service, **desviando do gateway** | rotas originais, sem prefixo |
 
 Pelo gateway (com JWT, rate-limit e correlation-id):
@@ -696,11 +751,13 @@ Correção: `make k8s-build` (o script detecta a divergência, troca a imagem e 
 
 > **Por que isso acontece:** `minikube image load fcg/users-api:1.0` **não sobrescreve** uma tag que já existe no cluster quando um container está usando aquela imagem -- e termina com **código de sucesso**, sem aviso. Somado ao `imagePullPolicy: IfNotPresent` e a uma tag fixa (`:1.0`), o `kubectl apply` também não muda o pod spec, então não há rollout: o cluster fica rodando código antigo indefinidamente enquanto tudo aparenta ter funcionado.
 >
-> O `scripts/k8s/build-images.sh` cobre isso: compara o ID da imagem no host com o do cluster e, quando divergem, escala o Deployment para 0 (a tag só pode ser trocada quando nenhum container a usa), troca a imagem e volta as réplicas. No fim ele reconfere os três serviços e **falha** se algum ficou defasado.
+> O `scripts/k8s/build-images.sh` cobre isso: compara o ID da imagem no host com o do cluster e, quando divergem, escala o Deployment para 0 (a tag só pode ser trocada quando nenhum container a usa), troca a imagem e volta as réplicas. No fim ele reconfere as quatro imagens e **falha** se alguma ficou defasada.
 
 ### `make k8s-build` avisa `[skip] Dockerfile nao encontrado`
 
 O repo daquele serviço foi reestruturado e não tem mais o Dockerfile no caminho esperado. O script segue com os outros serviços e o cluster continua com a imagem de um build anterior -- o que roda, mas com código velho. Ajuste o caminho em `scripts/k8s/build-images.sh` (e no `docker-compose.yml`) quando o repo definir o novo layout.
+
+Para a imagem local do NotificationsAPI o aviso é outro — `[skip] codigo-fonte nao encontrado em .../NotificationsAPI` —, porque o Dockerfile mora neste repo e o que falta é o **repo irmão**: clone-o ao lado deste ou ajuste `NOTIFICATIONS_API_PATH` no `.env`.
 
 ### `401 {"message":"Unauthorized"}` numa rota que deveria ser anônima
 
@@ -743,9 +800,145 @@ Ver a nota em [Cache (Redis)](#cache-redis). Se o `catalog-api` estiver em loop 
 `ACCESS_REFUSED`, aí sim o evento nunca saiu: o Deployment não está injetando
 `RabbitMq__Username`/`RabbitMq__Password` e o app usa o `guest`/`pass` do `appsettings.json`.
 
+### Pod `notifications-dynamodb` preso em `ContainerCreating`
+
+O pod monta o script de criação da tabela a partir do ConfigMap `notifications-dynamodb-init`, que **não** está em `k8s/`: ele é gerado do arquivo pelo `make k8s-deploy`. Aplicar os manifestos na mão sem o passo 4 do [Passo a passo manual](#passo-a-passo-manual-o-que-o-make-k8s-up-automatiza) deixa o pod preso, com este evento:
+
+```bash
+kubectl describe pod -n fcg -l app=notifications-dynamodb | grep -i configmap
+# MountVolume.SetUp failed for volume "init" : configmap "notifications-dynamodb-init" not found
+```
+
+Crie o ConfigMap (passo 4) e o kubelet monta o volume na próxima tentativa, sem precisar recriar o pod.
+
+### Notificação falha com `ResourceNotFoundException` (tabela inexistente)
+
+A resposta traz o item em `batchItemFailures` e o log da função mostra:
+
+```
+Falha ao processar mensagem ..., será reenfileirada Amazon.DynamoDBv2.Model.ResourceNotFoundException: Cannot do operations on a non-existent table
+```
+
+O DynamoDB Local roda em memória: se ele reinicia, a tabela some, e o script que a cria só roda na subida.
+
+- **Compose:** o `notifications-dynamodb-init` já saiu. Rode-o de novo com `docker-compose up -d notifications-dynamodb-init`.
+- **k8s:** o container `init-table` segue de pé, mas a readiness dele passa a falhar e o pod sai do Service. Recrie o pod com `kubectl rollout restart deployment/notifications-dynamodb -n fcg`.
+
+### `NullReferenceException` chamando o emulador da Lambda direto
+
+Chamando a porta direta do emulador (`8084`/`8085`, sem o gateway), a resposta vem com **HTTP 200** e o erro no corpo:
+
+```
+{"errorType": "NullReferenceException", "errorMessage": "Object reference not set to an instance of an object.", ...}
+```
+
+O corpo não era o envelope SQS. Sem `Records`, a função quebra na primeira linha do `SqsBatchProcessor`. O emulador, como a própria Lambda, devolve o erro da função no **corpo**, não no status HTTP. Mande o envelope (`{"Records":[...]}`, como os `events/*.json` do repo do NotificationsAPI) ou passe pelo gateway, que embrulha o evento puro.
+
+### Notificação responde `batchItemFailures` vazio, mas nada foi gravado
+
+Não é falha: a função descartou a mensagem de propósito, porque na AWS reentregá-la não adiantaria. O log diz o motivo:
+
+```bash
+docker-compose logs notifications-user-registered | grep -E "malformada|já processada"            # Compose
+kubectl logs -n fcg deploy/notifications-user-registered | grep -E "malformada|já processada"     # k8s
+```
+
+- `Mensagem ... malformada, descartando`: o `body` não é um JSON válido do evento, por exemplo um `UserId` que não é GUID.
+- `Mensagem ... já processada anteriormente, descartando reentrega`: o `EventId` já está na tabela. Gere outro `EventId` para repetir o teste.
+
+## NotificationsAPI local (via Kong)
+
+Em **produção** o `NotificationsAPI` é uma função AWS Lambda acionada por SQS (ver [Serverless (NotificationsAPI)](#serverless-notificationsapi)): não tem entrada HTTP e não passa pelo gateway. Para quem está **testando localmente**, este repositório roda o **mesmo código** na imagem oficial da Lambda (`public.ecr.aws/lambda/dotnet:10`), que já traz o *Runtime Interface Emulator* — um endpoint HTTP de invocação — e o Kong expõe esse endpoint. Vale para Compose e Minikube, com os mesmos caminhos.
+
+```
+                                       Kong (JWT + envelope SQS)
+POST /notifications/user-registered   ─▶ notifications-user-registered   ─┐
+POST /notifications/payment-processed ─▶ notifications-payment-processed ─┴─▶ DynamoDB Local
+                                         (emulador da Lambda, :8080)         (fcg-notifications)
+```
+
+**Nada disso toca a produção.** Nenhum arquivo do repositório do NotificationsAPI é alterado: o `Dockerfile` e o script da tabela moram aqui, em `notifications-local/`, e o código entra no build como contexto nomeado, só leitura. `template.yaml`, `samconfig.toml` e o `sam deploy` seguem iguais; a imagem local nunca é publicada; e as funções locais usam credenciais AWS fictícias e o DynamoDB Local, sem nunca enxergar as chaves reais do `.env`.
+
+| Peça | Compose | k8s |
+|---|---|---|
+| Função de cadastro | serviço `notifications-user-registered` (porta direta `8084`) | Deployment `notifications-user-registered` |
+| Função de pagamento | serviço `notifications-payment-processed` (porta direta `8085`) | Deployment `notifications-payment-processed` |
+| DynamoDB Local | serviço `notifications-dynamodb` | Deployment `notifications-dynamodb` |
+| Criação da tabela | serviço `notifications-dynamodb-init` (roda e sai) | container `init-table` no pod do DynamoDB |
+
+### Subindo
+
+Não há passo extra: as funções fazem parte da stack local.
+
+| Ambiente | Comando | O que acontece |
+|---|---|---|
+| Compose | `docker-compose up --build` | builda a imagem `fcg/notifications-lambda:local`; o `notifications-dynamodb-init` cria a tabela e sai com `Exited (0)` — é o esperado |
+| k8s, automatizado | `make k8s-up` | builda e carrega `fcg/notifications-lambda:1.0` junto com as imagens das APIs e gera o ConfigMap do init da tabela |
+| k8s, manual | [Passo a passo manual](#passo-a-passo-manual-o-que-o-make-k8s-up-automatiza), passos 2, 4 e 5 | build da imagem, ConfigMap do init e verificação da tabela |
+
+O código vem do repositório do NotificationsAPI, que precisa estar clonado ao lado deste (ou em `NOTIFICATIONS_API_PATH`, no `.env`). Mudou o código lá? Basta rebuildar aqui:
+
+```bash
+docker-compose up -d --build notifications-user-registered notifications-payment-processed   # Compose
+make k8s-build   # k8s: detecta a imagem nova e rola os dois Deployments
+```
+
+### Testando as notificações
+
+O corpo é o **próprio evento de integração** — o mesmo JSON que o `users-api` e o `payments-api` publicam no SNS. O gateway o embrulha no envelope `{"Records":[{"body": ...}]}` que o handler espera, como o SQS faz. Se você já mandar o envelope (por exemplo, um dos `events/*.json` do repo do NotificationsAPI), ele passa intacto.
+
+```bash
+GATEWAY=http://localhost:8000
+TOKEN=$(curl -s -X POST $GATEWAY/users/api/auth/login -H "Content-Type: application/json" \
+  -d '{"email":"teste@fcg.com","password":"Senha123!"}' | jq -r .accessToken)
+
+# 1. Cadastro -> grava a notificação de boas-vindas e "envia" o e-mail (log)
+curl -s -X POST $GATEWAY/notifications/user-registered \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"UserId":"11111111-1111-1111-1111-111111111111","Name":"Ana","Email":"ana@exemplo.com","EventId":"22222222-2222-2222-2222-222222222222","OccurredAt":"2026-09-10T12:00:00Z"}'
+# {"batchItemFailures":[]}
+
+# 2. Pagamento aprovado (Status 1) do MESMO usuário -> confirmação de compra
+curl -s -X POST $GATEWAY/notifications/payment-processed \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"UserId":"11111111-1111-1111-1111-111111111111","GameId":"33333333-3333-3333-3333-333333333333","Status":1,"EventId":"44444444-4444-4444-4444-444444444444","OccurredAt":"2026-09-10T12:00:00Z"}'
+# {"batchItemFailures":[]}
+```
+
+A resposta é o `SQSBatchResponse` da função — o mesmo que o SQS recebe na AWS:
+
+| Resposta | Significado |
+|---|---|
+| `{"batchItemFailures":[]}` | processado — **ou** descartado de propósito: evento duplicado ou JSON malformado (na AWS, reentregar não adiantaria). O motivo fica no log. |
+| `{"batchItemFailures":[{"itemIdentifier":"..."}]}` | falhou; na AWS o SQS reentregaria. Caso típico: pagamento de um usuário cujo cadastro ainda não chegou (`RecipientNotReadyException`) — mande o cadastro antes. Se o log falar em tabela inexistente, ver [troubleshooting](#notificação-falha-com-resourcenotfoundexception-tabela-inexistente). |
+
+A primeira chamada de cada função leva ~2 s (cold start, como na Lambda); as seguintes, décimos de segundo.
+
+Para ver o resultado:
+
+```bash
+# Compose
+docker-compose logs notifications-user-registered notifications-payment-processed
+docker-compose run --rm --entrypoint aws \
+  -e AWS_ACCESS_KEY_ID=local -e AWS_SECRET_ACCESS_KEY=local -e AWS_DEFAULT_REGION=us-east-1 \
+  notifications-dynamodb-init \
+  dynamodb scan --table-name fcg-notifications --endpoint-url http://notifications-dynamodb:8000
+
+# k8s
+kubectl logs -n fcg deploy/notifications-user-registered
+kubectl exec -n fcg deploy/notifications-dynamodb -c init-table -- \
+  aws dynamodb scan --table-name fcg-notifications --endpoint-url http://localhost:8000
+```
+
+> **O que não acontece localmente.** Não existe o encadeamento automático SNS → SQS → Lambda: o `users-api` e o `payments-api` continuam publicando no SNS **da AWS** (e, sem credenciais válidas, só logam um aviso). Cadastrar um usuário pelo `/users` não dispara a função local — as rotas `/notifications/...` são o gatilho aqui. O DynamoDB Local é em memória: o conteúdo some ao recriar o container ou o pod.
+
+> **Schema da tabela.** `notifications-local/init-dynamodb.sh` espelha a tabela do `template.yaml` (chave `PK`, índice `GSI1-UserId`). Se o schema mudar lá, mude aqui. O Compose roda o script a cada `up`; no k8s, o `make k8s-deploy` rola o pod do DynamoDB quando o script muda.
+
 ## Serverless (NotificationsAPI)
 
 O `NotificationsAPI` da Fase 2 (container ASP.NET Core rodando 24/7 no Kubernetes, só para consumir eventos do RabbitMQ) foi **migrado para uma função AWS Lambda**, atendendo ao requisito obrigatório de "Migração para Arquitetura Serverless" da Fase 3.
+
+> **Testar sem AWS:** as mesmas funções rodam localmente no emulador da Lambda, atrás do Kong — ver [NotificationsAPI local (via Kong)](#notificationsapi-local-via-kong). Nada disso altera o que está provisionado na AWS.
 
 - **Repositório próprio (código + IaC):** https://github.com/joao-malvetoni-alta-horizon/FIAPCloudGames-fase3-NotificationsAPI
 - **Infraestrutura como código:** AWS SAM (`template.yaml` na raiz daquele repositório).
@@ -794,6 +987,18 @@ O gateway consome duas variáveis próprias:
 As demais variáveis do Kong (`KONG_*`) são fixas no manifesto/Compose e não dependem de ConfigMap nem Secret. As que valem conhecer: `KONG_ADMIN_LISTEN` (Admin API no loopback do pod), `KONG_TRUSTED_IPS`/`KONG_REAL_IP_HEADER`/`KONG_REAL_IP_RECURSIVE` (IP real do cliente atrás do Ingress, para o rate-limit por IP) e `KONG_HEADERS=latency_tokens` (mantém os headers de latência, tira o `Server: kong/<versao>`).
 
 > **Nota:** o `catalog-api` lê a seção `RabbitMq:` como o `payments-api` — as mesmas keys. (Ele já usou uma URI `amqp://` em `ConnectionStrings__RabbitMqConnection`; se voltar a injetar só aquela, o app cai no `guest`/`pass` do `appsettings.json` e o broker recusa com `ACCESS_REFUSED`.) O `catalog-api` é também o único que usa Redis — ver [Cache (Redis)](#cache-redis). `users` e `catalog` compartilham a mesma `JwtSettings__SecretKey`. `payments` tem banco próprio (`paymentsdb`), não usa JWT, e publica `PaymentProcessedEvent` em dois transportes: RabbitMQ (de volta pro `catalog-api`, libera o jogo na biblioteca) e SNS (para a Lambda do NotificationsAPI). As credenciais AWS são só para o SNS; sem elas essa publicação falha silenciosamente (log de warning) e o restante do fluxo (RabbitMQ/HTTP) continua normal.
+
+As funções **locais** do NotificationsAPI não usam ConfigMap nem Secret: os valores são fixos no `docker-compose.yml` e em `k8s/23-notifications.yaml`, e **nunca** apontam para credenciais reais.
+
+| Variável | Valor local | Para que |
+|---|---|---|
+| `DynamoDb__ServiceUrl` | `http://notifications-dynamodb:8000` | aponta o SDK para o DynamoDB Local; na AWS ela não existe e o SDK usa o DynamoDB real |
+| `DynamoDb__TableName` | `fcg-notifications` | mesma tabela do `template.yaml` |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `local` | o SDK exige credencial mesmo com o DynamoDB Local, que roda com `-sharedDb` e as ignora |
+| `AWS_REGION` | `us-east-1` | idem |
+| `NEW_RELIC_LICENSE_KEY` | `local-dev-placeholder` | o `Telemetry.cs` aborta a função sem ela; com o placeholder os traces são recusados, sem afetar a execução |
+
+No `.env`, `NOTIFICATIONS_API_PATH` diz onde está o repo do NotificationsAPI (default `../FIAPCloudGames-fase3-NotificationsAPI`), como `USERS_API_PATH` e os demais.
 
 > **Secret** é apenas base64 (não é cofre). Não comite valores reais.
 

@@ -147,7 +147,11 @@ if [ "$divergentes" -gt 0 ]; then
   exit 1
 fi
 
-if [ "${#SKIPPED[@]-0}" -gt 0 ] 2>/dev/null && [ -n "${SKIPPED[*]-}" ]; then
+# `${#SKIPPED[@]-0}` e sintaxe invalida ("bad substitution") e derrubava o
+# script aqui, no fim de TODO build bem-sucedido -- o que fazia o `make k8s-up`
+# parar antes do deploy. `${SKIPPED[*]-}` sozinho ja cobre o array vazio, inclusive
+# com `set -u` no bash 3.2 do macOS.
+if [ -n "${SKIPPED[*]-}" ]; then
   echo "!! Sem Dockerfile, nao rebuildado(s): ${SKIPPED[*]}" >&2
   echo "   O cluster continua com a imagem de um build anterior desses servicos." >&2
 fi

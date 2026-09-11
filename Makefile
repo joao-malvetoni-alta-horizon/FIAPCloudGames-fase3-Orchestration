@@ -19,7 +19,7 @@ help:
 	@echo "  make k8s-up       - start do Minikube + build/load das imagens + deploy (fluxo completo)"
 	@echo "  make k8s-start    - so inicia o cluster Minikube"
 	@echo "  make k8s-build    - so builda e carrega as 4 imagens no Minikube"
-	@echo "  make k8s-deploy   - so aplica os manifestos k8s/ (regera a config do Kong e rola o gateway se ela mudou) e espera os pods"
+	@echo "  make k8s-deploy   - so aplica os manifestos k8s/ (regera a config do Kong e o ConfigMap do init do DynamoDB local, rolando o que mudou) e espera os pods"
 	@echo "  make k8s-status   - mostra pods, deployments, services, configmaps e secrets do namespace $(NAMESPACE)"
 	@echo "  make k8s-ingress  - habilita o Ingress do Minikube e aplica o manifesto de ingress"
 	@echo "  make k8s-down     - remove o namespace $(NAMESPACE) (derruba tudo)"

@@ -4,7 +4,8 @@
 # GERADO de kong/kong.yml -- o mesmo arquivo que o docker-compose monta. Para
 # mudar rota/plugin: edite kong/kong.yml e rode `make kong-config`.
 #
-# Escopo atual: catalog-api e users-api (http://<servico>:8080 no namespace).
+# Escopo atual: users-api, catalog-api e payments-api, mais as duas funcoes do
+# NotificationsAPI rodando no emulador da Lambda -- so local (ver kong/kong.yml).
 #
 # O Kong le a config declarativa UMA VEZ, no startup. Trocar o ConfigMap nao
 # recarrega os pods sozinho -- por isso o scripts/k8s/deploy.sh grava o hash da

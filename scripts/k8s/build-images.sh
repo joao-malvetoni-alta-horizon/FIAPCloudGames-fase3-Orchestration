@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builda as imagens Docker das 3 APIs e carrega no Minikube.
+# Builda as imagens Docker das 3 APIs e da Lambda local do NotificationsAPI
+# e carrega no Minikube.
 # Le os caminhos dos repos irmaos do .env (mesmas variaveis do docker-compose).
 #
 # ----------------------------------------------------------------------
@@ -38,19 +39,25 @@ fi
 USERS_API_PATH="${USERS_API_PATH:-../FIAPCloudGames-fase3-UsersAPI}"
 CATALOG_API_PATH="${CATALOG_API_PATH:-../FIAPCloudGames-fase3-CatalogAPI}"
 PAYMENTS_API_PATH="${PAYMENTS_API_PATH:-../FIAPCloudGames-fase3-PaymentsAPI}"
-# notifications-api NAO tem mais imagem de container: virou uma funcao AWS
-# Lambda (repositorio FIAPCloudGames-fase3-NotificationsAPI, deploy via
-# `sam deploy` naquele repo, nao pelo Minikube). Ver README.md, secao Serverless.
+NOTIFICATIONS_API_PATH="${NOTIFICATIONS_API_PATH:-../FIAPCloudGames-fase3-NotificationsAPI}"
 
 cd "$ROOT_DIR"
 
 NAMESPACE="fcg"
 
-# nome do servico | contexto de build | Dockerfile (relativo ao contexto)
+# imagem | contexto | Dockerfile | Deployments que usam a imagem | contexto nomeado
+#
+# A `notifications-lambda` e SOMENTE LOCAL. Em producao o NotificationsAPI e uma
+# Lambda (deploy via `sam deploy` no repo dele); aqui o mesmo codigo roda na
+# imagem oficial da Lambda, com o Runtime Interface Emulator, para o Kong poder
+# invoca-lo. O Dockerfile mora neste repo (notifications-local/) e le o codigo do
+# repo irmao por um contexto nomeado -- nada e escrito la. Uma imagem atende as
+# duas funcoes (o handler vem do `args` de cada Deployment), dai a lista.
 SERVICES=(
-  "users-api|$USERS_API_PATH|src/FCG.API/Dockerfile"
-  "catalog-api|$CATALOG_API_PATH|src/CatalogAPI.API/Dockerfile"
-  "payments-api|$PAYMENTS_API_PATH|src/FCG.API/Dockerfile"
+  "users-api|$USERS_API_PATH|$USERS_API_PATH/src/FCG.API/Dockerfile|users-api|"
+  "catalog-api|$CATALOG_API_PATH|$CATALOG_API_PATH/src/CatalogAPI.API/Dockerfile|catalog-api|"
+  "payments-api|$PAYMENTS_API_PATH|$PAYMENTS_API_PATH/src/FCG.API/Dockerfile|payments-api|"
+  "notifications-lambda|notifications-local|notifications-local/Dockerfile|notifications-user-registered,notifications-payment-processed|notificationsapi=$NOTIFICATIONS_API_PATH/NotificationsAPI"
 )
 
 host_image_id() {
@@ -67,7 +74,7 @@ SKIPPED=()
 
 for entry in "${SERVICES[@]}"; do
   i=$((i + 1))
-  IFS='|' read -r name ctx dockerfile <<< "$entry"
+  IFS='|' read -r name ctx dockerfile deployments named_ctx <<< "$entry"
   image="fcg/$name:1.0"
 
   echo "==> [$i/$total] $name"
@@ -75,14 +82,27 @@ for entry in "${SERVICES[@]}"; do
   # Um repo de servico pode ter sido reestruturado e nao ter mais o Dockerfile
   # neste caminho. Sem esta checagem, o `set -e` mataria o script no meio e os
   # servicos seguintes (e a conferencia final) nunca rodariam.
-  if [ ! -f "$ctx/$dockerfile" ]; then
-    echo "    [skip] Dockerfile nao encontrado em $ctx/$dockerfile" >&2
+  if [ ! -f "$dockerfile" ]; then
+    echo "    [skip] Dockerfile nao encontrado em $dockerfile" >&2
     echo "           o repo do $name provavelmente foi reestruturado." >&2
     SKIPPED+=("$name")
     continue
   fi
 
-  docker build -t "$image" "$ctx" -f "$ctx/$dockerfile"
+  # Contexto nomeado: o codigo vem de outra pasta que nao o contexto do build.
+  # Mesma protecao do Dockerfile ausente, para o repo irmao nao clonado.
+  build_args=()
+  if [ -n "$named_ctx" ]; then
+    if [ ! -d "${named_ctx#*=}" ]; then
+      echo "    [skip] codigo-fonte nao encontrado em ${named_ctx#*=}" >&2
+      echo "           confira o caminho do repo no .env." >&2
+      SKIPPED+=("$name")
+      continue
+    fi
+    build_args=(--build-context "$named_ctx")
+  fi
+
+  docker build -t "$image" ${build_args[@]+"${build_args[@]}"} -f "$dockerfile" "$ctx"
 
   host_id="$(host_image_id "$image")"
   cluster_id="$(cluster_image_id "$image")"
@@ -92,22 +112,40 @@ for entry in "${SERVICES[@]}"; do
     continue
   fi
 
-  # A tag no cluster esta ausente ou desatualizada. Se ha Deployment de pe, ele
-  # precisa sair do ar para a tag ficar livre (docker nao remove imagem em uso).
-  replicas=""
-  if kubectl get deployment "$name" -n "$NAMESPACE" >/dev/null 2>&1; then
-    replicas="$(kubectl get deployment "$name" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')"
-    echo "    imagem do cluster desatualizada; escalando $name para 0 para liberar a tag"
-    kubectl scale deployment/"$name" --replicas=0 -n "$NAMESPACE" >/dev/null
-    kubectl wait --for=delete pod -l app="$name" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1 || true
+  # A tag no cluster esta ausente ou desatualizada. Se ha Deployments de pe, eles
+  # precisam sair do ar para a tag ficar livre (docker nao remove imagem em uso).
+  # Uma imagem pode servir a mais de um Deployment -- TODOS precisam escalar.
+  # (Arrays indexados, sem associativos: o bash 3.2 do macOS nao os tem.)
+  scaled_deploys=()
+  scaled_replicas=()
+  IFS=',' read -r -a deploys <<< "$deployments"
+  for d in "${deploys[@]}"; do
+    if kubectl get deployment "$d" -n "$NAMESPACE" >/dev/null 2>&1; then
+      scaled_deploys+=("$d")
+      scaled_replicas+=("$(kubectl get deployment "$d" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')")
+    fi
+  done
+
+  if [ "${#scaled_deploys[@]}" -gt 0 ]; then
+    echo "    imagem do cluster desatualizada; escalando ${scaled_deploys[*]} para 0 para liberar a tag"
+    for d in "${scaled_deploys[@]}"; do
+      kubectl scale deployment/"$d" --replicas=0 -n "$NAMESPACE" >/dev/null
+    done
+    for d in "${scaled_deploys[@]}"; do
+      kubectl wait --for=delete pod -l app="$d" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1 || true
+    done
   fi
 
   minikube image rm "$image" >/dev/null 2>&1 || true
   minikube image load "$image"
 
-  if [ -n "$replicas" ]; then
-    echo "    voltando $name para $replicas replica(s) com a imagem nova"
-    kubectl scale deployment/"$name" --replicas="$replicas" -n "$NAMESPACE" >/dev/null
+  if [ "${#scaled_deploys[@]}" -gt 0 ]; then
+    j=0
+    while [ "$j" -lt "${#scaled_deploys[@]}" ]; do
+      echo "    voltando ${scaled_deploys[$j]} para ${scaled_replicas[$j]} replica(s) com a imagem nova"
+      kubectl scale deployment/"${scaled_deploys[$j]}" --replicas="${scaled_replicas[$j]}" -n "$NAMESPACE" >/dev/null
+      j=$((j + 1))
+    done
   fi
 done
 
@@ -116,7 +154,7 @@ done
 echo "==> Conferindo se o cluster ficou com as imagens do host"
 divergentes=0
 for entry in "${SERVICES[@]}"; do
-  IFS='|' read -r name _ _ <<< "$entry"
+  IFS='|' read -r name _ _ _ _ <<< "$entry"
   image="fcg/$name:1.0"
   host_id="$(host_image_id "$image")"
   cluster_id="$(cluster_image_id "$image")"
@@ -147,7 +185,11 @@ if [ "$divergentes" -gt 0 ]; then
   exit 1
 fi
 
-if [ "${#SKIPPED[@]-0}" -gt 0 ] 2>/dev/null && [ -n "${SKIPPED[*]-}" ]; then
+# `${#SKIPPED[@]-0}` e sintaxe invalida ("bad substitution") e derrubava o
+# script aqui, no fim de TODO build bem-sucedido -- o que fazia o `make k8s-up`
+# parar antes do deploy. `${SKIPPED[*]-}` sozinho ja cobre o array vazio, inclusive
+# com `set -u` no bash 3.2 do macOS.
+if [ -n "${SKIPPED[*]-}" ]; then
   echo "!! Sem Dockerfile, nao rebuildado(s): ${SKIPPED[*]}" >&2
   echo "   O cluster continua com a imagem de um build anterior desses servicos." >&2
 fi

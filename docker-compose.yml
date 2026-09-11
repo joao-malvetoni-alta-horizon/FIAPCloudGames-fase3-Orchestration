@@ -1,9 +1,10 @@
 # docker-compose unificado da FCG Fase 3 (base Fase 2 + novos componentes a adicionar).
 # Sobe a infraestrutura (RabbitMQ + PostgreSQL com 2 bancos) e os 3 microsservicos HTTP.
-# O notifications-api NAO roda mais aqui: foi migrado para uma funcao AWS Lambda
-# (SNS + SQS), acionada sob demanda em vez de um container 24/7.
-# Ver repositorio FIAPCloudGames-fase3-NotificationsAPI (pasta irma) e a secao
-# "Serverless (NotificationsAPI)" do README.md deste repo.
+# Em producao o NotificationsAPI e uma funcao AWS Lambda (SNS + SQS), acionada sob
+# demanda em vez de um container 24/7 -- deploy via `sam deploy` no repo dele.
+# Localmente, o MESMO codigo roda aqui na imagem oficial da Lambda, para ser
+# testado pelo gateway: ver o bloco NOTIFICATIONS abaixo e a secao
+# "NotificationsAPI local (via Kong)" do README.md.
 #
 # RabbitMQ ainda existe aqui para o fluxo Catalog -> Payments (OrderPlacedEvent) e para
 # Payments -> Catalog (PaymentProcessedEvent, que libera o jogo na biblioteca). A Lambda
@@ -14,7 +15,7 @@
 # essa publicacao falha silenciosamente (log de warning) e o resto do fluxo HTTP/RabbitMQ
 # continua normal.
 #
-# Na frente do users-api e do catalog-api roda o API Gateway (Kong, DB-less),
+# Na frente dos servicos roda o API Gateway (Kong, DB-less),
 # unico ponto de entrada em http://localhost:8000 -- ver a secao
 # "API Gateway (Kong)" do README.md.
 # Uso:  docker-compose up --build
@@ -22,6 +23,32 @@
 # Caminhos dos repos de servico (pastas irmaas deste repo).
 # Defaults = nomes gerados pelo `git clone` no GitHub. Se renomeou as pastas, ajuste no .env.
 #   USERS_API_PATH=../fcg-users-api  (exemplo)
+
+# Base comum das duas funcoes do NotificationsAPI (SOMENTE LOCAL): mesma imagem,
+# mesmo ambiente -- so o handler muda, como no template.yaml.
+x-notifications-lambda: &notifications-lambda
+  build:
+    # O Dockerfile mora neste repo; o codigo vem do repo irmao por um contexto
+    # nomeado. Assim nada e escrito no repo do NotificationsAPI.
+    context: ./notifications-local
+    additional_contexts:
+      notificationsapi: ${NOTIFICATIONS_API_PATH:-../FIAPCloudGames-fase3-NotificationsAPI}/NotificationsAPI
+  image: fcg/notifications-lambda:local
+  environment:
+    DynamoDb__ServiceUrl: http://notifications-dynamodb:8000
+    DynamoDb__TableName: fcg-notifications
+    # O SDK da AWS exige credencial e regiao mesmo falando com o DynamoDB Local,
+    # que roda com -sharedDb e as ignora. Ficticias DE PROPOSITO: nunca herdar
+    # as chaves reais do .env aqui.
+    AWS_ACCESS_KEY_ID: local
+    AWS_SECRET_ACCESS_KEY: local
+    AWS_REGION: us-east-1
+    # Telemetry.cs aborta a funcao sem esta variavel. Com o placeholder os traces
+    # sao recusados pelo New Relic, sem afetar a execucao.
+    NEW_RELIC_LICENSE_KEY: local-dev-placeholder
+  depends_on:
+    notifications-dynamodb-init: { condition: service_completed_successfully }
+
 services:
   # ---------- INFRAESTRUTURA ----------
   rabbitmq:
@@ -152,17 +179,59 @@ services:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
 
-  # notifications-api NAO roda mais aqui: virou uma funcao AWS Lambda
-  # (SNS + SQS). Ver README.md, secao Serverless (NotificationsAPI).
+  # ---------- NOTIFICATIONS (SOMENTE LOCAL) ----------
+  # Em producao o NotificationsAPI e uma Lambda acionada por SQS. Aqui o mesmo
+  # codigo roda na imagem oficial da Lambda, cujo Runtime Interface Emulator
+  # aceita invocacao por HTTP -- e o Kong expoe isso em /notifications/...
+  # Nada destes services existe na AWS.
+  #
+  # Localmente NAO ha o encadeamento automatico SNS -> SQS -> Lambda: users-api
+  # e payments-api seguem publicando no SNS da AWS. Para acionar as funcoes aqui,
+  # chame as rotas do gateway.
+  notifications-dynamodb:
+    image: amazon/dynamodb-local:latest
+    # -sharedDb: sem ele o DynamoDB Local separa as tabelas por access key/regiao
+    # e a funcao nao enxergaria a tabela criada pelo init.
+    # -inMemory: ambiente de teste; o conteudo some junto com o container.
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+
+  # Cria a tabela (schema espelhado do template.yaml) e sai. Idempotente.
+  notifications-dynamodb-init:
+    image: amazon/aws-cli:latest
+    entrypoint: ["sh", "/init/init-dynamodb.sh"]
+    environment:
+      DYNAMODB_ENDPOINT: http://notifications-dynamodb:8000
+    volumes:
+      - ./notifications-local/init-dynamodb.sh:/init/init-dynamodb.sh:ro
+    depends_on:
+      notifications-dynamodb: { condition: service_started }
+    restart: "no"
+
+  notifications-user-registered:
+    <<: *notifications-lambda
+    # Porta direta do emulador, para debug sem o gateway:
+    #   POST http://localhost:8084/2015-03-31/functions/function/invocations
+    ports:
+      - "8084:8080"
+
+  notifications-payment-processed:
+    <<: *notifications-lambda
+    # O handler e o unico argumento do entrypoint da imagem da Lambda.
+    command: ["Notifications.Functions::Notifications.Functions.Functions::PaymentProcessedHandler"]
+    ports:
+      - "8085:8080"
 
   # ---------- API GATEWAY ----------
   # Kong em modo DB-less: as rotas vem de kong/kong.yml (unica fonte de verdade,
-  # compartilhada com os manifestos k8s). Escopo atual: catalog-api e users-api.
+  # compartilhada com os manifestos k8s). Escopo: users-api, catalog-api,
+  # payments-api e, SO LOCALMENTE, as funcoes do NotificationsAPI.
   #
   # Ponto de entrada unico:
   #   http://localhost:8000/users/...     (login, register, admin)
   #   http://localhost:8000/catalog/...   (jogos, biblioteca)
-  # As portas diretas dos servicos (8081-8083) continuam abertas para debug.
+  #   http://localhost:8000/payments/...  (consulta e disparo manual de pagamentos)
+  #   http://localhost:8000/notifications/...  (invoca as funcoes do NotificationsAPI)
+  # As portas diretas dos servicos (8081-8085) continuam abertas para debug.
   kong:
     image: kong:3.9
     # O Kong DB-less nao interpola variaveis de ambiente no YAML declarativo, e
@@ -201,11 +270,14 @@ services:
       timeout: 5s
       retries: 10
     depends_on:
-      # Nenhum dos dois declara healthcheck, entao esperamos so o start.
+      # Nenhum deles declara healthcheck, entao esperamos so o start.
       # (O Kong DB-less sobe mesmo com upstream fora do ar - responde 502/503
       # ate o servico atender.)
       catalog-api: { condition: service_started }
       users-api: { condition: service_started }
+      payments-api: { condition: service_started }
+      notifications-user-registered: { condition: service_started }
+      notifications-payment-processed: { condition: service_started }
 
 volumes:
   pgdata:

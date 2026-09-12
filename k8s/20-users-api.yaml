@@ -38,6 +38,16 @@ spec:
               valueFrom: { secretKeyRef: { name: fcg-secrets, key: JwtSettings__SecretKey } }
             - name: ConnectionStrings__DefaultConnection
               valueFrom: { secretKeyRef: { name: fcg-secrets, key: Users__ConnectionString } }
+            - name: NEW_RELIC_LICENSE_KEY
+              valueFrom: { secretKeyRef: { name: new-relic, key: license-key } }
+            - name: NEW_RELIC_APP_NAME
+              value: "FIAPCloudGames-fase3-UsersAPI"
+            - name: NEW_RELIC_DISTRIBUTED_TRACING_ENABLED
+              value: "true"
+            - name: NEW_RELIC_APPLICATION_LOGGING_ENABLED
+              value: "true"
+            - name: NEW_RELIC_APPLICATION_LOGGING_FORWARDING_ENABLED
+              value: "true"
           # Usuários não expõe /health: sonda TCP na porta 8080.
           livenessProbe:
             tcpSocket: { port: 8080 }

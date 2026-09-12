@@ -975,7 +975,7 @@ Recursos provisionados na AWS (conta usada pelo grupo, região `us-east-1`):
 | `AWS_SECRET_ACCESS_KEY` | Sim | — | Sim | Secret |
 | `JwtSettings__SecretKey` | Sim | Sim | — | Secret |
 | `ASPNETCORE_ENVIRONMENT` | Sim | Sim | Sim | ConfigMap |
-| `NEW_RELIC_LICENSE_KEY` | Sim | Sim | Sim | Secret (`observability/new-relic-secret.yaml`) |
+| `NEW_RELIC_LICENSE_KEY` | Sim | Sim | Sim | Secret (`k8s/04-new-relic-secret.yaml`) |
 
 O gateway consome duas variáveis próprias:
 
@@ -1004,4 +1004,4 @@ No `.env`, `NOTIFICATIONS_API_PATH` diz onde está o repo do NotificationsAPI (d
 
 ## Observabilidade (New Relic)
 
-O grupo optou pela **Opção B** do enunciado (plataforma de APM gerenciada): **New Relic**, cobrindo os três pilares (métricas, logs e traces) em `UsersAPI`, `CatalogAPI`, `PaymentsAPI` e na função serverless. Detalhes em [`docs/observability.md`](docs/observability.md). A license key é injetada via Kubernetes Secret (`observability/new-relic-secret.yaml`), nunca commitada em texto puro no código-fonte, conforme exigido pelo enunciado para a Opção B.
+O grupo optou pela **Opção B** do enunciado (plataforma de APM gerenciada): **New Relic**, cobrindo os três pilares (métricas, logs e traces) em `UsersAPI`, `CatalogAPI`, `PaymentsAPI` e na função serverless. Detalhes em [`docs/observability.md`](docs/observability.md). A license key é injetada via Kubernetes Secret (`k8s/04-new-relic-secret.yaml`) e, localmente, pela variável `NEW_RELIC_LICENSE_KEY` no `.env` (ver `.env.example`); nunca é commitada em texto puro no código-fonte, conforme exigido pelo enunciado para a Opção B.

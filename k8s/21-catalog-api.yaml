@@ -42,6 +42,16 @@ spec:
             # variável o app tenta localhost:6379 e devolve 500 em toda leitura.
             - name: ConnectionStrings__Redis
               valueFrom: { secretKeyRef: { name: fcg-secrets, key: Catalog__RedisConnection } }
+            - name: NEW_RELIC_LICENSE_KEY
+              valueFrom: { secretKeyRef: { name: new-relic, key: license-key } }
+            - name: NEW_RELIC_APP_NAME
+              value: "FIAPCloudGames-fase3-CatalogAPI"
+            - name: NEW_RELIC_DISTRIBUTED_TRACING_ENABLED
+              value: "true"
+            - name: NEW_RELIC_APPLICATION_LOGGING_ENABLED
+              value: "true"
+            - name: NEW_RELIC_APPLICATION_LOGGING_FORWARDING_ENABLED
+              value: "true"
           # Catálogo não expõe /health: sonda TCP na porta 8080.
           livenessProbe:
             tcpSocket: { port: 8080 }

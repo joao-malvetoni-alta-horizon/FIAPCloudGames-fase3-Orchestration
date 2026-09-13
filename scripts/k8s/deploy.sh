@@ -28,6 +28,12 @@ kubectl create configmap notifications-dynamodb-init -n "$NAMESPACE" \
 echo "==> Aplicando manifestos de k8s/"
 kubectl apply -f k8s/
 
+# Os manifestos versionados trazem a license key do New Relic e as credenciais
+# da AWS como PLACEHOLDER. Este script sobrepoe com os valores reais do .env --
+# tem de rodar DEPOIS do apply, senao o placeholder volta por cima.
+echo "==> Aplicando segredos reais do .env"
+"$SCRIPT_DIR/secrets.sh"
+
 # O init da tabela so roda na subida do pod: trocar o ConfigMap nao o re-executa.
 # Mesmo truque do Kong -- o hash do script no pod template faz o Deployment rolar
 # quando (e somente quando) o script mudou.

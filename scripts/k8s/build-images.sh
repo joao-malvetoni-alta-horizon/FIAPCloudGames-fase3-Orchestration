@@ -60,12 +60,32 @@ SERVICES=(
   "notifications-lambda|notifications-local|notifications-local/Dockerfile|notifications-user-registered,notifications-payment-processed|notificationsapi=$NOTIFICATIONS_API_PATH/NotificationsAPI"
 )
 
+# Impressao digital do CONTEUDO da imagem (hash dos digests das camadas do rootfs).
+#
+# Por que nao comparar o ID da imagem, como antes
+# -----------------------------------------------
+# O Docker do host usa o image store do containerd e reporta como ID o digest do
+# MANIFESTO; o Docker de dentro do Minikube usa o driver classico e reporta o
+# digest do CONFIG. Sao numeros diferentes para a MESMA imagem, entao a conferencia
+# por ID acusava divergencia em todos os servicos mesmo com o load correto --
+# `make k8s-up` abortava antes do deploy, sem nada de errado no cluster.
+#
+# `.RootFS.Layers` e enderecado por conteudo e identico dos dois lados: se as
+# camadas batem, o cluster tem exatamente a imagem que o host acabou de buildar.
+image_fingerprint() {
+  printf '%s' "$1" | sha256sum | cut -c1-12
+}
+
 host_image_id() {
-  docker images --no-trunc --format '{{.ID}}' "$1" 2>/dev/null | head -1
+  local layers
+  layers="$(docker inspect --format '{{.RootFS.Layers}}' "$1" 2>/dev/null)" || return 0
+  [ -n "$layers" ] && image_fingerprint "$layers"
 }
 
 cluster_image_id() {
-  minikube ssh -- "docker images --no-trunc --format '{{.ID}}' $1" 2>/dev/null | tr -d '\r' | head -1
+  local layers
+  layers="$(minikube ssh -- "docker inspect --format '{{.RootFS.Layers}}' $1" 2>/dev/null | tr -d '\r')" || return 0
+  [ -n "$layers" ] && image_fingerprint "$layers"
 }
 
 total="${#SERVICES[@]}"
@@ -108,7 +128,7 @@ for entry in "${SERVICES[@]}"; do
   cluster_id="$(cluster_image_id "$image")"
 
   if [ -n "$cluster_id" ] && [ "$host_id" = "$cluster_id" ]; then
-    echo "    imagem do cluster ja e identica a do host (${host_id:7:12}) - nada a fazer"
+    echo "    imagem do cluster ja e identica a do host (${host_id}) - nada a fazer"
     continue
   fi
 
@@ -163,7 +183,7 @@ for entry in "${SERVICES[@]}"; do
   # imagem carregada em algum build anterior - dizemos isso em voz alta.
   if [[ " ${SKIPPED[*]-} " == *" $name "* ]]; then
     if [ -n "$cluster_id" ]; then
-      printf '    [skip] %-20s sem Dockerfile; cluster mantem %s (build anterior)\n' "$name" "${cluster_id:7:12}"
+      printf '    [skip] %-20s sem Dockerfile; cluster mantem %s (build anterior)\n' "$name" "${cluster_id}"
     else
       printf '    [!!]  %-20s sem Dockerfile e sem imagem no cluster\n' "$name"
       divergentes=$((divergentes + 1))
@@ -172,9 +192,9 @@ for entry in "${SERVICES[@]}"; do
   fi
 
   if [ "$host_id" = "$cluster_id" ]; then
-    printf '    [ok]  %-20s %s\n' "$name" "${host_id:7:12}"
+    printf '    [ok]  %-20s %s\n' "$name" "${host_id}"
   else
-    printf '    [!!]  %-20s host=%s cluster=%s\n' "$name" "${host_id:7:12}" "${cluster_id:7:12}"
+    printf '    [!!]  %-20s host=%s cluster=%s\n' "$name" "${host_id}" "${cluster_id}"
     divergentes=$((divergentes + 1))
   fi
 done

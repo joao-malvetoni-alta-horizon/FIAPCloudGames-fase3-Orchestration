@@ -12,7 +12,7 @@ endif
 SHELL := $(BASH)
 NAMESPACE ?= fcg
 
-.PHONY: help k8s-start k8s-build k8s-deploy k8s-up k8s-status k8s-ingress k8s-down kong-config
+.PHONY: help k8s-start k8s-build k8s-deploy k8s-up k8s-status k8s-ingress k8s-down kong-config k8s-secrets
 
 help:
 	@echo "Comandos disponiveis:"
@@ -24,6 +24,7 @@ help:
 	@echo "  make k8s-ingress  - habilita o Ingress do Minikube e aplica o manifesto de ingress"
 	@echo "  make k8s-down     - remove o namespace $(NAMESPACE) (derruba tudo)"
 	@echo "  make kong-config  - regera k8s/03-kong-config.yaml a partir de kong/ (rode apos editar kong/kong.yml)"
+	@echo "  make k8s-secrets  - reaplica os segredos reais do .env no cluster (New Relic e AWS)"
 
 k8s-start:
 	@echo "==> Iniciando o cluster Minikube"
@@ -36,6 +37,9 @@ k8s-build:
 
 kong-config:
 	@$(BASH) scripts/kong/sync-configmap.sh
+
+k8s-secrets:
+	@$(BASH) scripts/k8s/secrets.sh
 
 k8s-deploy:
 	@$(BASH) scripts/k8s/deploy.sh

@@ -976,6 +976,17 @@ Recursos provisionados na AWS (conta usada pelo grupo, região `us-east-1`):
 | `JwtSettings__SecretKey` | Sim | Sim | — | Secret |
 | `ASPNETCORE_ENVIRONMENT` | Sim | Sim | Sim | ConfigMap |
 | `NEW_RELIC_LICENSE_KEY` | Sim | Sim | Sim | Secret (`k8s/04-new-relic-secret.yaml`) |
+| `CORECLR_ENABLE_PROFILING` | Sim | Sim | Sim | fixa no manifesto/Compose |
+| `CORECLR_PROFILER` | Sim | Sim | Sim | fixa no manifesto/Compose |
+| `CORECLR_NEWRELIC_HOME` | Sim | Sim | Sim | fixa no manifesto/Compose |
+| `CORECLR_PROFILER_PATH` | Sim | Sim | Sim | fixa no manifesto/Compose |
+
+> **As quatro `CORECLR_*` não são opcionais.** O pacote NuGet `NewRelic.Agent` coloca o
+> agente em `/app/newrelic`, mas o .NET só instrumenta a aplicação quando o profiler do CLR
+> é habilitado por estas variáveis. Sem elas o agente fica **inerte e silencioso**: nenhum
+> erro no log, e zero métricas, logs ou traces chegando no New Relic. Já aconteceu neste
+> projeto — o sintoma foi "a license key está certa, o agente está instalado e mesmo assim
+> não aparece nada no New Relic".
 
 O gateway consome duas variáveis próprias:
 
@@ -1005,3 +1016,15 @@ No `.env`, `NOTIFICATIONS_API_PATH` diz onde está o repo do NotificationsAPI (d
 ## Observabilidade (New Relic)
 
 O grupo optou pela **Opção B** do enunciado (plataforma de APM gerenciada): **New Relic**, cobrindo os três pilares (métricas, logs e traces) em `UsersAPI`, `CatalogAPI`, `PaymentsAPI` e na função serverless. Detalhes em [`docs/observability.md`](docs/observability.md). A license key é injetada via Kubernetes Secret (`k8s/04-new-relic-secret.yaml`) e, localmente, pela variável `NEW_RELIC_LICENSE_KEY` no `.env` (ver `.env.example`); nunca é commitada em texto puro no código-fonte, conforme exigido pelo enunciado para a Opção B.
+
+Como o manifesto `k8s/04-new-relic-secret.yaml` é versionado, ele guarda apenas um
+**placeholder**. Quem põe o valor real no cluster é o `scripts/k8s/secrets.sh`, que lê o
+`.env` (a mesma fonte do Compose) e sobrepõe os segredos **depois** do `kubectl apply` —
+a license key do New Relic e as credenciais AWS de `fcg-secrets`. O `deploy.sh` já o chama,
+então `make k8s-up` faz isso sozinho; para reaplicar depois de trocar um valor no `.env`,
+use `make k8s-secrets`.
+
+Como Secret lido por variável de ambiente só é resolvido na criação do container, o script
+grava o **hash** dos valores numa annotation do pod template (mesma técnica do ConfigMap do
+Kong): os Deployments rolam quando o segredo muda, e só então. Na annotation vai o hash,
+nunca o valor.

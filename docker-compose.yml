@@ -123,6 +123,12 @@ services:
       AWS_REGION: ${AWS_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # Ativa o profiler do CLR -- sem estas 4 variaveis o pacote NewRelic.Agent
+      # fica instalado em /app/newrelic mas NUNCA e carregado (agente inerte).
+      CORECLR_ENABLE_PROFILING: "1"
+      CORECLR_PROFILER: "{36032161-FFC0-4B61-B559-F6C5D41BAE5A}"
+      CORECLR_NEWRELIC_HOME: /app/newrelic
+      CORECLR_PROFILER_PATH: /app/newrelic/libNewRelicProfiler.so
       NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
       NEW_RELIC_APP_NAME: FIAPCloudGames-fase3-UsersAPI
       NEW_RELIC_DISTRIBUTED_TRACING_ENABLED: "true"
@@ -152,6 +158,12 @@ services:
       RabbitMq__Password: ${RABBITMQ_PASS:-fcg123}
       RabbitMq__VirtualHost: "/"
       JwtSettings__SecretKey: ${JWT_SECRET_KEY:-6a8a56f4d31a272d6e2f048f710c9cce45b51aa343fd6f73d8b69f1218eaac56}
+      # Ativa o profiler do CLR -- sem estas 4 variaveis o pacote NewRelic.Agent
+      # fica instalado em /app/newrelic mas NUNCA e carregado (agente inerte).
+      CORECLR_ENABLE_PROFILING: "1"
+      CORECLR_PROFILER: "{36032161-FFC0-4B61-B559-F6C5D41BAE5A}"
+      CORECLR_NEWRELIC_HOME: /app/newrelic
+      CORECLR_PROFILER_PATH: /app/newrelic/libNewRelicProfiler.so
       NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
       NEW_RELIC_APP_NAME: FIAPCloudGames-fase3-CatalogAPI
       NEW_RELIC_DISTRIBUTED_TRACING_ENABLED: "true"
@@ -183,6 +195,12 @@ services:
       AWS_REGION: ${AWS_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # Ativa o profiler do CLR -- sem estas 4 variaveis o pacote NewRelic.Agent
+      # fica instalado em /app/newrelic mas NUNCA e carregado (agente inerte).
+      CORECLR_ENABLE_PROFILING: "1"
+      CORECLR_PROFILER: "{36032161-FFC0-4B61-B559-F6C5D41BAE5A}"
+      CORECLR_NEWRELIC_HOME: /app/newrelic
+      CORECLR_PROFILER_PATH: /app/newrelic/libNewRelicProfiler.so
       NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
       NEW_RELIC_APP_NAME: FIAPCloudGames-fase3-PaymentsAPI
       NEW_RELIC_DISTRIBUTED_TRACING_ENABLED: "true"

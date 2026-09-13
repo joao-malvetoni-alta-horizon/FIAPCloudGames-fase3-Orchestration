@@ -1,6 +1,6 @@
 # FCG Orchestration (Fase 3)
 
-Repositório de **orquestração** da FIAP Cloud Games (Fase 3). Parte da base da Fase 2 (RabbitMQ, PostgreSQL, `docker-compose` e manifestos Kubernetes) e concentra aqui as novas capacidades obrigatórias do Tech Challenge: **API Gateway (Kong)** (feito, cobrindo `users-api`, `catalog-api`, `payments-api` e, localmente, o `NotificationsAPI` -- ver [API Gateway (Kong)](#api-gateway-kong)), **Observabilidade (New Relic)**, **MongoDB**, **Redis** e a migração do `NotificationsAPI` para **Serverless (AWS Lambda)**.
+Repositório de **orquestração** da FIAP Cloud Games (Fase 3). Parte da base da Fase 2 (RabbitMQ, PostgreSQL, `docker-compose` e manifestos Kubernetes) e concentra aqui as novas capacidades obrigatórias do Tech Challenge: **API Gateway (Kong)** (feito, cobrindo `users-api`, `catalog-api`, `payments-api` e, localmente, o `NotificationsAPI` -- ver [API Gateway (Kong)](#api-gateway-kong)), **Observabilidade (New Relic)**, **NoSQL (DynamoDB)**, **Redis** e a migração do `NotificationsAPI` para **Serverless (AWS Lambda)**.
 
 > **Com pressa?** O gateway responde em `http://localhost:8000` (Docker) ou `http://gateway.fcg.local` (Kubernetes com Ingress). A tabela de [onde chamar o gateway](#onde-chamar-o-gateway) tem a URL base de cada forma de subir o projeto.
 

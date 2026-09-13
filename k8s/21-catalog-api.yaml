@@ -42,6 +42,17 @@ spec:
             # variável o app tenta localhost:6379 e devolve 500 em toda leitura.
             - name: ConnectionStrings__Redis
               valueFrom: { secretKeyRef: { name: fcg-secrets, key: Catalog__RedisConnection } }
+            # Ativa o profiler do CLR. Sem estas 4 variaveis o pacote NewRelic.Agent
+            # fica instalado em /app/newrelic mas NUNCA e carregado (agente inerte).
+            # O GUID precisa de aspas: sem elas o YAML leria {..} como um mapa.
+            - name: CORECLR_ENABLE_PROFILING
+              value: "1"
+            - name: CORECLR_PROFILER
+              value: "{36032161-FFC0-4B61-B559-F6C5D41BAE5A}"
+            - name: CORECLR_NEWRELIC_HOME
+              value: /app/newrelic
+            - name: CORECLR_PROFILER_PATH
+              value: /app/newrelic/libNewRelicProfiler.so
             - name: NEW_RELIC_LICENSE_KEY
               valueFrom: { secretKeyRef: { name: new-relic, key: license-key } }
             - name: NEW_RELIC_APP_NAME

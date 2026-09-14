@@ -50,7 +50,7 @@ FIAPCloudGames-fase3-Orchestration/   # este repo (nome padrão do git clone)
 ├── notifications-local/ # NotificationsAPI só local: Dockerfile da Lambda + init do DynamoDB
 ├── observability/       # secret/manifestos de New Relic
 ├── docs/                # documentação de observabilidade
-├── scripts/             # automação (k8s/ e kong/)
+├── scripts/             # automação (k8s/, kong/ e validate-tracing.sh)
 └── templates/           # modelos de Dockerfile e /k8s por serviço
 ```
 
@@ -1015,7 +1015,7 @@ No `.env`, `NOTIFICATIONS_API_PATH` diz onde está o repo do NotificationsAPI (d
 
 ## Observabilidade (New Relic)
 
-O grupo optou pela **Opção B** do enunciado (plataforma de APM gerenciada): **New Relic**, cobrindo os três pilares (métricas, logs e traces) em `UsersAPI`, `CatalogAPI`, `PaymentsAPI` e na função serverless. Detalhes em [`docs/observability.md`](docs/observability.md). A license key é injetada via Kubernetes Secret (`k8s/04-new-relic-secret.yaml`) e, localmente, pela variável `NEW_RELIC_LICENSE_KEY` no `.env` (ver `.env.example`); nunca é commitada em texto puro no código-fonte, conforme exigido pelo enunciado para a Opção B.
+O grupo optou pela **Opção B** do enunciado (plataforma de APM gerenciada): **New Relic**, cobrindo os três pilares (métricas, logs e traces) em `UsersAPI`, `CatalogAPI`, `PaymentsAPI` e na função serverless. Detalhes em [`docs/observability.md`](docs/observability.md). O salto pelo RabbitMQ é o ponto delicado dos traces — a instrumentação automática do agente não cobre o cliente AMQP que usamos, e a propagação é feita no código dos serviços: ver [Propagação de trace pelo RabbitMQ](#propagação-de-trace-pelo-rabbitmq). A license key é injetada via Kubernetes Secret (`k8s/04-new-relic-secret.yaml`) e, localmente, pela variável `NEW_RELIC_LICENSE_KEY` no `.env` (ver `.env.example`); nunca é commitada em texto puro no código-fonte, conforme exigido pelo enunciado para a Opção B.
 
 Como o manifesto `k8s/04-new-relic-secret.yaml` é versionado, ele guarda apenas um
 **placeholder**. Quem põe o valor real no cluster é o `scripts/k8s/secrets.sh`, que lê o
@@ -1028,3 +1028,115 @@ Como Secret lido por variável de ambiente só é resolvido na criação do cont
 grava o **hash** dos valores numa annotation do pod template (mesma técnica do ConfigMap do
 Kong): os Deployments rolam quando o segredo muda, e só então. Na annotation vai o hash,
 nunca o valor.
+
+### Propagação de trace pelo RabbitMQ
+
+**O sintoma.** Os traces não atravessavam o broker. No New Relic, cada serviço aparecia
+como um trace isolado: o `catalog-api` terminava a transação ao publicar o
+`OrderPlacedEvent` e o resto da saga simplesmente não existia do outro lado. Pior, o
+`payments-api` não aparecia em APM **de jeito nenhum** — o único endpoint HTTP dele é
+`/health`, e todo o trabalho real acontece no consumo da fila, que não estava
+instrumentado.
+
+**A causa.** Incompatibilidade de versão entre o agente e o cliente AMQP. O wrapper de
+RabbitMQ do agente New Relic .NET 10.54.0 casa apenas até a **6.8.1**, e o projeto usa o
+**RabbitMQ.Client 7.2.1**. Dá para ler direto de dentro do pod:
+
+```bash
+kubectl exec -n fcg deploy/catalog-api -- \
+  grep -o 'maxVersion="[^"]*"' /app/newrelic/extensions/NewRelic.Providers.Wrapper.RabbitMq.Instrumentation.xml
+# maxVersion="6.8.1"
+```
+
+O profiler diz a mesma coisa, nas próprias palavras dele
+(`/app/newrelic/logs/NewRelic.Profiler.*.log`):
+
+```
+Unable to find RabbitMQ.Client.Framing.Impl.Model for rejit. HR:-2146234064
+Unable to find RabbitMQ.Client.Events.EventingBasicConsumer for rejit. HR:-2146234064
+```
+
+As classes que o wrapper procura (`RabbitMQ.Client.Framing.Impl.Model`,
+`EventingBasicConsumer`) deixaram de existir na v7. Sem rejit não há span de
+publish/consume e, principalmente, **não há propagação de contexto**: uma mensagem real
+capturada da `catalog.exchange` trazia só
+`{"delivery_mode":2,"content_type":"application/json"}` — nenhum header. Repare que o
+agente não reclama disso como erro: ele registra em `[Info ]` e segue silencioso, o que
+faz o sintoma parecer "o New Relic não mostra a saga" em vez de "a instrumentação não
+casou".
+
+**A solução — propagação manual.** A correção é de código, nos serviços; este repo não
+muda nada de configuração por causa dela.
+
+- O pacote `FiapCloudGames.RabbitMq` **1.1.0** passou a expor os headers da mensagem na
+  publicação e no consumo (antes eles nem chegavam à aplicação).
+- O `catalog-api` injeta o contexto ao publicar o `OrderPlacedEvent`, com
+  `InsertDistributedTraceHeaders` e `TransportType.Queue`.
+- O `payments-api` aceita o contexto ao consumir, com `AcceptDistributedTraceHeaders`
+  (também `TransportType.Queue`), marca o método de consumo como `[Transaction]` — sem
+  isso não existe transação à qual anexar o contexto — e injeta de novo ao publicar o
+  `PaymentProcessedEvent`, fechando o caminho de volta para o `catalog-api`.
+
+**Onde o trace começa.** No `catalog-api`. O **Kong não roda agente .NET** e portanto não
+é um span: não adianta procurar o gateway no waterfall do New Relic, ele não está lá e não
+vai estar. O primeiro span é a transação HTTP do `catalog-api`.
+
+### Alternativas avaliadas e descartadas
+
+| Alternativa | Por que não |
+|---|---|
+| Baixar o `RabbitMQ.Client` para 6.8.1, entrando na faixa que o agente instrumenta | O `FiapCloudGames.RabbitMq` é compilado contra APIs que só existem na v7 — `IChannel`, `CreateChannelAsync`, `BasicPublishAsync`, `AsyncEventingBasicConsumer.ReceivedAsync`, `BasicProperties` como classe. Com a 6.8.1 o build até passa em alguns pontos, mas o runtime quebra com `MissingMethodException`. |
+| Migrar os três serviços .NET para OpenTelemetry | É a solução mais limpa a longo prazo e alinharia com a Lambda do NotificationsAPI, que já usa OTel + OTLP. Mas é trocar a stack de telemetria inteira dos três serviços, grande demais para o prazo desta entrega. **Fica registrada como dívida técnica.** |
+| Esperar o agente suportar o `RabbitMQ.Client` 7.x | Fora do nosso controle e sem data anunciada. |
+
+### Validando a propagação (`scripts/validate-tracing.sh`)
+
+O script derruba a pergunta "o trace atravessa o broker?" para um exit code, sem depender
+de olhar a UI do New Relic:
+
+```bash
+./scripts/validate-tracing.sh
+```
+
+O que ele faz:
+
+1. Detecta o ambiente — gateway em `:8200` (port-forward do k8s) ou `:8000` (Compose) — e
+   fala com o broker por `kubectl exec` ou `docker compose exec`, conforme o caso.
+2. Cria duas **filas espias** ligadas às mesmas exchanges/routing keys da saga
+   (`catalog.exchange`/`order.placed` e `payments.exchange`/`payment.status`). São cópias:
+   os consumidores reais continuam recebendo tudo.
+3. Autentica, escolhe um jogo que ainda não está na biblioteca (cria um, se precisar) e
+   dispara uma compra de verdade.
+4. Lê uma mensagem de cada fila e exige o header `traceparent` nas duas, **com o mesmo
+   trace-id** — é essa igualdade que separa "cada serviço abriu um trace próprio" de "o
+   contexto atravessou o broker".
+5. Apaga as filas espias no fim, inclusive em erro ou `Ctrl-C` (`trap`). As filas têm nome
+   fixo e são removidas também no começo da execução, então rodar duas vezes seguidas não
+   deixa lixo no broker.
+
+Duas armadilhas que o script trata, as duas já custaram tempo aqui:
+
+- **Token expirado.** O JWT dura ~1h; com token vencido o Kong devolve `401` e a requisição
+  nem chega ao `catalog-api` — não há mensagem publicada e qualquer conclusão sobre headers
+  seria chute. Por isso o script tira um token novo a cada execução e **exige `202` na
+  compra** antes de olhar para qualquer header.
+- **Porta 8100.** É o listener de *status* do Kong no Compose e responde `404` em rota de
+  aplicação. O script nunca a usa como gateway, e você também não deveria.
+
+Variáveis opcionais: `FCG_EMAIL`, `FCG_PASSWORD`, `FCG_NAMESPACE` (default `fcg`),
+`RABBITMQ_USER`/`RABBITMQ_PASS` (default `fcg`/`fcg123`) e `TRACE_TIMEOUT` (segundos de
+espera por cada mensagem, default `60`).
+
+> **Enquanto as correções do `catalog-api` e do `payments-api` não estiverem mergeadas *e*
+> deployadas, este script falha** — e é assim que ele deve se comportar. A saída aponta o
+> que falta:
+>
+> ```
+> SEM traceparent  catalog.exchange / order.placed  (publicado pelo catalog-api)
+> headers recebidos: {}
+> ```
+>
+> Sem a correção deployada, o Bloco 5.4 do `ROTEIRO-VIDEO.md` não tem trace distribuído
+> pela mensageria para mostrar. A alternativa honesta é exibir o trace de uma requisição
+> HTTP com os spans de Postgres e Redis — que existe e é legítimo — e declarar a limitação
+> do salto pelo broker com a causa técnica na mão.

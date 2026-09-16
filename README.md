@@ -54,6 +54,24 @@ FIAPCloudGames-fase3-Orchestration/   # este repo (nome padrão do git clone)
 └── templates/           # modelos de Dockerfile e /k8s por serviço
 ```
 
+## Pré-requisitos
+
+Instale antes de começar:
+
+| Ferramenta | Para quê | Obrigatório? |
+|---|---|---|
+| **Docker** + **Docker Compose** (plugin v2) | subir o stack | sim |
+| **git** | clonar os 5 repositórios | sim |
+| **jq** | os comandos de teste deste README extraem JSON com ele | sim (`apt install jq`) |
+| **minikube** + **kubectl** | só para a rota Kubernetes | opcional |
+| **AWS CLI** | só para inspecionar Lambda/DynamoDB na AWS | opcional |
+
+Não é preciso ter .NET instalado: os serviços são compilados dentro do `docker build`.
+
+```bash
+docker --version && docker compose version && git --version && jq --version
+```
+
 ## Como clonar (layout esperado)
 
 Clone os **5 repos** na **mesma pasta pai**. O `docker-compose` assume os nomes padrão gerados pelo GitHub:
@@ -87,11 +105,50 @@ Pré-requisito: os repos de serviço devem estar como **irmãos** deste, com os 
 
 ```bash
 cd FIAPCloudGames-fase3-Orchestration
-cp .env.example .env        # ajuste caminhos se renomeou pastas
+cp .env.example .env        # <- e PREENCHA as credenciais, ver abaixo
 docker-compose up --build
 docker-compose ps           # todos healthy/running; o notifications-dynamodb-init
                             # sai com Exited (0) de propósito: ele só cria a tabela
 ```
+
+### O que preencher no `.env`
+
+O `.env.example` já vem com tudo que é local (senhas de Postgres, RabbitMQ, Redis e o segredo
+do JWT). **Três variáveis chegam vazias e precisam ser preenchidas** — sem elas o stack sobe,
+mas duas frentes obrigatórias do Tech Challenge ficam mudas:
+
+| Variável | Sem ela | Efeito prático |
+|---|---|---|
+| `NEW_RELIC_LICENSE_KEY` | Observabilidade morta | Os agentes sobem e não reportam nada: sem métricas, logs ou traces no New Relic |
+| `AWS_ACCESS_KEY_ID` | Serverless mudo | O publish no SNS falha e o evento é **perdido**; a Lambda na AWS nunca é acionada |
+| `AWS_SECRET_ACCESS_KEY` | idem | idem |
+
+> ⚠️ **Sem as credenciais AWS, o cadastro (`POST /users/api/users/register`) leva ~16 segundos.**
+> Não é lentidão da aplicação: sem credencial, o SDK da AWS percorre toda a cadeia de resolução
+> (variáveis → perfil → **metadata do EC2**) e só desiste depois do timeout do último. Com as
+> credenciais preenchidas, o mesmo cadastro responde em ~2s.
+
+As três credenciais são fornecidas no documento de entrega, fora do repositório — nenhuma delas
+é versionada aqui, como o enunciado exige.
+
+### O catálogo nasce vazio
+
+Não há seed de dados: logo após subir, `GET /catalog/api/v1/games` responde `"games":[]`. Isso é
+esperado. Crie alguns jogos antes de testar o fluxo de compra:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/users/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"teste@fcg.com","password":"Senha123!"}' | jq -r .accessToken)
+
+curl -s -X POST http://localhost:8000/catalog/api/v1/games \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Cyber Quest","description":"RPG futurista em Neo-Tokyo","price":99.90,"genre":1,"releaseDate":"2026-12-01"}'
+```
+
+> Duas validações do domínio que costumam surpreender: o **título precisa de ao menos 10
+> caracteres** e a **data de lançamento não pode estar no passado** — as duas devolvem `400`.
+> `genre` é o índice do enum: 0 Action, 1 RPG, 2 Strategy, 3 Sports, 4 Puzzle, 5 Other.
 
 Portas locais: **gateway (Kong) `8000`**, users `8081`, catalog `8082`, payments `8083`, notifications `8084` (cadastro) e `8085` (pagamento) direto no emulador da Lambda (interno sempre `8080`).
 Painel do RabbitMQ: http://localhost:15672 (fcg/fcg123).
@@ -118,7 +175,7 @@ TOKEN=$(curl -s -X POST http://localhost:8000/users/api/auth/login \
 curl -s http://localhost:8000/catalog/api/v1/games -H "Authorization: Bearer $TOKEN"
 ```
 
-> O passo 1 requer `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` válidos no `.env` (ver `.env.example`); sem eles, a publicação no SNS falha silenciosamente (log de warning) e o cadastro continua normal.
+> O passo 1 requer `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` válidos no `.env`. Sem eles o cadastro **ainda funciona**, mas leva ~16s e o evento é perdido (a Lambda não é acionada) — ver [O que preencher no `.env`](#o-que-preencher-no-env).
 
 4. **Compra:** iniciar compra no `catalog-api` pelo gateway -> `OrderPlacedEvent` via RabbitMQ -> `payments-api` processa e publica `PaymentProcessedEvent` em dois transportes: RabbitMQ (de volta pro `catalog-api`, libera o jogo na biblioteca se aprovado) e SNS (`fcg-payment-events`, aciona a Lambda de notificações).
 
